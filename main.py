@@ -19,12 +19,10 @@ load_dotenv()
 # Переменные среды
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()]
+OPENAI_KEY = os.getenv("OPENAI_KEY")  # <-- ВАЖНО: теперь из Secrets
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 OWNER_ID = 9995599
 OWNER_USERNAME = "qqq5599"
-
-# Ключ OpenAI на случай падения OpenRouter
-OPENAI_KEY = os.getenv("OPENAI")
 OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
 # Инициализация бота и диспетчера
