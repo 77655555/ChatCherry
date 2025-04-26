@@ -1,12 +1,15 @@
 import os
+import sys
 import logging
 import aiohttp
 import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
-from aiogram.utils.markdown import bold
+from aiogram.types import Message, FSInputFile, Document, Voice, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
+from aiogram.utils.markdown import bold, italic
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -21,6 +24,9 @@ API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.s
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 OWNER_ID = 9995599
 OWNER_USERNAME = "qqq5599"
+WEBHOOK_HOST = 'https://chatcherry-4.onrender.com'
+WEBHOOK_PATH = '/webhook'
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN)
@@ -171,11 +177,18 @@ async def handle_voice(message: Message):
     await bot.send_chat_action(message.chat.id, action="typing")
     await message.answer("🎙 *Обработка голосовых пока в разработке!*\nПожалуйста, используйте текст или документы.")
 
-# Запуск бота
-async def main():
+# При запуске
+async def on_startup(app):
     asyncio.create_task(clear_user_histories())
-    await dp.start_polling(bot)
+    await bot.set_webhook(WEBHOOK_URL)
+    logging.info(f"Webhook установлен: {WEBHOOK_URL}")
 
+# Aiohttp-приложение
+app = web.Application()
+SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+app.on_startup.append(on_startup)
+
+# Запуск через веб-сервер
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(main())
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 3000)))
