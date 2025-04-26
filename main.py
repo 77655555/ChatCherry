@@ -186,6 +186,7 @@ async def start_webserver():
 async def main():
     asyncio.create_task(start_webserver())
     asyncio.create_task(clear_user_histories())
+    await bot.delete_webhook(drop_pending_updates=True)  # <--- Вставил сюда удаление вебхука
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
