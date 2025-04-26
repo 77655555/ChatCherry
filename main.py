@@ -1,19 +1,17 @@
 import os
-import sys
 import logging
 import aiohttp
 import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile, Document, Voice, KeyboardButton, ReplyKeyboardMarkup
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
-from aiogram.utils.markdown import bold, italic
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.utils.markdown import bold
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import List, Dict, Any
+from aiohttp import web
 
 # Загрузка .env переменных
 load_dotenv()
@@ -24,9 +22,10 @@ API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.s
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 OWNER_ID = 9995599
 OWNER_USERNAME = "qqq5599"
-WEBHOOK_HOST = 'https://chatcherry-4.onrender.com'
-WEBHOOK_PATH = '/webhook'
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
+# Ключ OpenAI на случай падения OpenRouter
+OPENAI_KEY = os.getenv("OPENAI")
+OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN)
@@ -47,8 +46,9 @@ menu_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# Функция для запроса в OpenRouter с автосменой ключей
-async def ask_openrouter(messages: List[Dict[str, Any]], api_keys: List[str]):
+# Функция для запроса в OpenRouter или OpenAI
+async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
+    # Пытаемся через OpenRouter
     for idx, key in enumerate(api_keys):
         headers = {
             "Authorization": f"Bearer {key}",
@@ -67,15 +67,34 @@ async def ask_openrouter(messages: List[Dict[str, Any]], api_keys: List[str]):
                     elif response.status in (401, 403, 429):
                         continue
                     else:
-                        return "❗ *Ошибка на стороне OpenRouter.*"
+                        break  # Плохой ответ, сразу переходим к OpenAI
         except Exception:
             continue
-    return "❗ *Все API-ключи недоступны. Попробуйте позже.*"
+
+    # Если OpenRouter не ответил — пробуем через OpenAI напрямую
+    headers = {
+        "Authorization": f"Bearer {OPENAI_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "gpt-3.5-turbo",
+        "messages": messages
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(OPENAI_ENDPOINT, headers=headers, json=payload, timeout=60) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data["choices"][0]["message"]["content"]
+                else:
+                    return "❗ *Ошибка на стороне OpenAI.*"
+    except Exception:
+        return "❗ *Все API-ключи недоступны. Попробуйте позже.*"
 
 # Очистка истории пользователей раз в сутки
 async def clear_user_histories():
     while True:
-        await asyncio.sleep(86400)  # 24 часа
+        await asyncio.sleep(86400)
         user_histories.clear()
         user_limits.clear()
 
@@ -141,7 +160,7 @@ async def handle_text(message: Message):
 
     user_histories[user_id].append({"role": "user", "content": message.text})
 
-    response = await ask_openrouter(user_histories[user_id], API_KEYS)
+    response = await ask_gpt(user_histories[user_id], API_KEYS)
 
     user_histories[user_id].append({"role": "assistant", "content": response})
     await increment_limit(user_id)
@@ -164,7 +183,7 @@ async def handle_document(message: Message):
 
     user_histories[user_id].append({"role": "user", "content": content})
 
-    response = await ask_openrouter(user_histories[user_id], API_KEYS)
+    response = await ask_gpt(user_histories[user_id], API_KEYS)
 
     user_histories[user_id].append({"role": "assistant", "content": response})
     await increment_limit(user_id)
@@ -177,18 +196,24 @@ async def handle_voice(message: Message):
     await bot.send_chat_action(message.chat.id, action="typing")
     await message.answer("🎙 *Обработка голосовых пока в разработке!*\nПожалуйста, используйте текст или документы.")
 
-# При запуске
-async def on_startup(app):
-    asyncio.create_task(clear_user_histories())
-    await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"Webhook установлен: {WEBHOOK_URL}")
+# Простой веб-сервер для UptimeRobot
+async def handle(request):
+    return web.Response(text="Bot is alive!")
 
-# Aiohttp-приложение
-app = web.Application()
-SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
-app.on_startup.append(on_startup)
+async def start_webserver():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
 
-# Запуск через веб-сервер
+# Запуск бота
+async def main():
+    asyncio.create_task(start_webserver())  # Запуск веб-сервера
+    asyncio.create_task(clear_user_histories())  # Очистка памяти
+    await dp.start_polling(bot)
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 3000)))
+    asyncio.run(main())
