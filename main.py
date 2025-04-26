@@ -1,14 +1,12 @@
 import os
-import sys
 import logging
 import aiohttp
 import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import Message, FSInputFile, Document, Voice, KeyboardButton, ReplyKeyboardMarkup
-from aiogram.types import InputFile
-from aiogram.utils.markdown import bold, italic
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.utils.markdown import bold
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from collections import defaultdict
