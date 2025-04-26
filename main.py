@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import aiohttp
 import asyncio
@@ -6,9 +7,12 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message, FSInputFile, Document, Voice, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InputFile
+from aiogram.utils.markdown import bold, italic
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from collections import defaultdict
+from typing import List, Dict, Any
 
 # Загрузка .env переменных
 load_dotenv()
@@ -40,7 +44,7 @@ menu_keyboard = ReplyKeyboardMarkup(
 )
 
 # Функция для запроса в OpenRouter с автосменой ключей
-async def ask_openrouter(messages: list, api_keys: list):
+async def ask_openrouter(messages: List[Dict[str, Any]], api_keys: List[str]):
     for idx, key in enumerate(api_keys):
         headers = {
             "Authorization": f"Bearer {key}",
