@@ -4,6 +4,7 @@ import aiohttp
 import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode, ChatAction
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
 from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.markdown import bold
@@ -22,8 +23,10 @@ API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.s
 OWNER_ID = int(os.getenv("OWNER_ID", 9995599))
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "qqq5599")
 
-# Инициализация бота и диспетчера
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN)
+# Инициализация бота с исправлением deprecated-предупреждения
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
 dp = Dispatcher()
 
 # Память пользователей
@@ -40,7 +43,6 @@ menu_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# Функция запроса к OpenRouter
 async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
     for idx, key in enumerate(api_keys):
         headers = {
@@ -50,7 +52,12 @@ async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
         payload = {"model": "gpt-3.5-turbo", "messages": messages}
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60) as response:
+                async with session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=60
+                ) as response:
                     if response.status == 200:
                         data = await response.json()
                         return data["choices"][0]["message"]["content"]
@@ -63,14 +70,11 @@ async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
         except Exception as e:
             logging.error(f"Ошибка запроса к OpenRouter с ключом {key}: {e}")
             continue
-
     return "❗ *Все API-ключи недоступны. Попробуйте позже.*"
-
-# Прочие функции и обработчики остаются без изменений
 
 async def clear_user_histories():
     while True:
-        await asyncio.sleep(86400)
+        await asyncio.sleep(86400)  # 24 часа
         user_histories.clear()
         user_limits.clear()
         user_last_messages.clear()
@@ -138,16 +142,14 @@ async def handle_text(message: Message):
         return
 
     user_histories[user_id].append({"role": "user", "content": message.text})
-
     response = await ask_gpt(user_histories[user_id], API_KEYS)
-
+    
     if not response:
         response = "❗ *Ответ не получен. Попробуйте ещё раз.*"
 
     user_histories[user_id].append({"role": "assistant", "content": response})
     user_last_messages[user_id] = response
     await increment_limit(user_id)
-
     await message.answer(response)
 
 @dp.message(F.document)
@@ -161,24 +163,23 @@ async def handle_document(message: Message):
         return
 
     try:
-        file = await bot.download(message.document.file_id)
-        content = (await file.read()).decode("utf-8")
+        file = await bot.get_file(message.document.file_id)
+        content = await bot.download_file(file.file_path)
+        text_content = content.read().decode("utf-8")
     except Exception as e:
         logging.error(f"Ошибка при обработке документа: {e}")
         await message.answer("❗ *Не удалось обработать документ.*")
         return
 
-    user_histories[user_id].append({"role": "user", "content": content})
-
+    user_histories[user_id].append({"role": "user", "content": text_content})
     response = await ask_gpt(user_histories[user_id], API_KEYS)
-
+    
     if not response:
         response = "❗ *Ответ не получен. Попробуйте ещё раз.*"
 
     user_histories[user_id].append({"role": "assistant", "content": response})
     user_last_messages[user_id] = response
     await increment_limit(user_id)
-
     await message.answer(response)
 
 @dp.message(F.voice)
@@ -186,7 +187,7 @@ async def handle_voice(message: Message):
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     await message.answer("🎙 *Пока не поддерживаю голосовые сообщения!*")
 
-# Сервер для UptimeRobot
+# Веб-сервер для UptimeRobot
 async def handle(request):
     return web.Response(text="Bot is alive!")
 
@@ -199,10 +200,16 @@ async def start_webserver():
     await site.start()
 
 async def main():
-    asyncio.create_task(start_webserver())
+    await start_webserver()  # Запуск веб-сервера первым
     asyncio.create_task(clear_user_histories())
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    
+    try:
+        await dp.start_polling(bot, skip_updates=True)
+    except Exception as e:
+        logging.error(f"Ошибка поллинга: {e}")
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
