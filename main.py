@@ -5,7 +5,7 @@ import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode, ChatAction
 from aiogram.filters import Command
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, InputFile
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.markdown import bold
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -19,7 +19,7 @@ load_dotenv()
 # Переменные среды
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()]
-OPENAI_KEY = "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"
+OPENAI_KEY = os.getenv("OPENAI_KEY")
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 OWNER_ID = int(os.getenv("OWNER_ID", 9995599))
