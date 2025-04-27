@@ -19,9 +19,6 @@ load_dotenv()
 # Переменные среды
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()]
-OPENAI_KEY = os.getenv("OPENAI_KEY")
-ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 OWNER_ID = int(os.getenv("OWNER_ID", 9995599))
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "qqq5599")
 
@@ -43,6 +40,7 @@ menu_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# Функция запроса к OpenRouter
 async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
     for idx, key in enumerate(api_keys):
         headers = {
@@ -52,13 +50,12 @@ async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
         payload = {"model": "gpt-3.5-turbo", "messages": messages}
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(ENDPOINT, headers=headers, json=payload, timeout=60) as response:
+                async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60) as response:
                     if response.status == 200:
                         data = await response.json()
                         return data["choices"][0]["message"]["content"]
                     elif response.status in (401, 403, 429, 500, 502, 503):
                         logging.warning(f"API error ({response.status}) for key {key}. Retrying...")
-                        await asyncio.sleep(5)  # wait before retrying
                         continue
                     else:
                         logging.error(f"Unexpected error {response.status} for key {key}.")
@@ -67,23 +64,9 @@ async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
             logging.error(f"Ошибка запроса к OpenRouter с ключом {key}: {e}")
             continue
 
-    # fallback to OpenAI key if all API keys fail
-    headers = {
-        "Authorization": f"Bearer {OPENAI_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(OPENAI_ENDPOINT, headers=headers, json=payload, timeout=60) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data["choices"][0]["message"]["content"]
-                else:
-                    logging.error(f"OpenAI API error: {response.status}")
-                    return "❗ *Ошибка на стороне OpenAI.*"
-    except Exception as e:
-        logging.error(f"Ошибка запроса к OpenAI: {e}")
-        return "❗ *Все API-ключи недоступны. Попробуйте позже.*"
+    return "❗ *Все API-ключи недоступны. Попробуйте позже.*"
+
+# Прочие функции и обработчики остаются без изменений
 
 async def clear_user_histories():
     while True:
