@@ -2,300 +2,278 @@ import os
 import logging
 import aiohttp
 import asyncio
-from aiogram import Bot, Dispatcher, F, html
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode, ChatAction
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, FSInputFile
-from aiogram.utils.markdown import bold, italic
-from dotenv import load_dotenv
+from aiogram.utils.markdown import bold, italic, code
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import List, Dict, Any, Optional
 from aiohttp import web
-import random
+import json
+import hashlib
 from functools import lru_cache
 
-# Загрузка .env переменных
+# Configuration
 load_dotenv()
-
-# Конфигурация
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()]
-OWNER_ID = int(os.getenv("OWNER_ID", 9995599))
-OWNER_USERNAME = os.getenv("OWNER_USERNAME", "qqq5599")
-MAX_TOKENS = 2000
+ADMIN_USERNAME = "@qqq5599"
 DAILY_LIMIT = 10
+MAX_HISTORY_LENGTH = 10
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+ALLOWED_MIME_TYPES = ['text/plain', 'application/pdf']
 
-# Инициализация бота и диспетчера
+# Initialize bot with markdown parsing
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
-)
+    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2)
 dp = Dispatcher()
 
-# Хранилища данных
-user_histories = defaultdict(list)
-user_limits = defaultdict(lambda: {"count": 0, "last_reset": datetime.utcnow()})
-user_last_messages = defaultdict(str)
-user_stats = defaultdict(lambda: {"total_requests": 0, "last_active": None})
-user_ratings = defaultdict(int)
-user_langs = defaultdict(lambda: 'ru')
+# Memory storage with periodic cleanup
+class UserStorage:
+    def __init__(self):
+        self.histories = defaultdict(list)
+        self.limits = defaultdict(lambda: {"count": 0, "last_reset": datetime.utcnow()})
+        self.last_messages = defaultdict(str)
+        self.user_settings = defaultdict(dict)
 
-# Клавиатуры
-menu_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Расскажи анекдот"), KeyboardButton(text="Сделай мотивацию")],
-        [KeyboardButton(text="Помоги с идеями"), KeyboardButton(text="Напиши статью")],
-        [KeyboardButton(text="Статистика"), KeyboardButton(text="Помощь")]
-    ],
-    resize_keyboard=True,
-    input_field_placeholder="Выберите действие..."
-)
+    def cleanup(self):
+        now = datetime.utcnow()
+        for user_id in list(self.limits):
+            if (now - self.limits[user_id]["last_reset"]).days > 30:
+                del self.limits[user_id]
+                del self.histories[user_id]
+                del self.last_messages[user_id]
 
-ALLOWED_TYPES = ['text/plain', 'application/pdf']
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
-CUSTOM_COMMANDS = {
-    "анекдот": "Расскажи свежий анекдот про IT",
-    "мотивация": "Сгенерируй мотивационное сообщение",
-    "идея": "Предложи 5 идей для стартапа"
-}
-SUPPORTED_LANGS = ['ru', 'en']
+storage = UserStorage()
 
-async def generate_response(messages: List[Dict[str, Any]]) -> Optional[str]:
-    for key in random.sample(API_KEYS, len(API_KEYS)):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+# Rate limiter decorator
+def rate_limit(limit: int = 3, interval: int = 60):
+    def decorator(func):
+        last_calls = defaultdict(float)
+        
+        async def wrapper(message: Message, *args, **kwargs):
+            user_id = message.from_user.id
+            now = datetime.now().timestamp()
+            if now - last_calls[user_id] < interval:
+                await message.answer("⚠️ Слишком много запросов! Подождите немного.")
+                return
+            last_calls[user_id] = now
+            return await func(message, *args, **kwargs)
+        return wrapper
+    return decorator
+
+# Enhanced GPT client with caching
+class OpenRouterClient:
+    def __init__(self, api_keys: list):
+        self.api_keys = api_keys
+        self.session = aiohttp.ClientSession()
+        self.current_key_idx = 0
+
+    async def get_response(self, messages: list) -> Optional[str]:
+        for _ in range(len(self.api_keys)):
+            key = self.api_keys[self.current_key_idx]
+            try:
+                async with self.session.post(
                     "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "https://github.com/your-repo",
-                    },
+                    headers={"Authorization": f"Bearer {key}"},
                     json={
                         "model": "gpt-3.5-turbo",
-                        "messages": messages,
-                        "max_tokens": MAX_TOKENS,
+                        "messages": messages[-MAX_HISTORY_LENGTH:],
                         "temperature": 0.7,
+                        "max_tokens": 1500
                     },
-                    timeout=45
+                    timeout=30
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
                         return data['choices'][0]['message']['content']
                     elif response.status == 429:
-                        logging.warning(f"Key {key[-5:]} rate limited")
-                    else:
-                        logging.error(f"API error {response.status} with key {key[-5:]}")
-        except Exception as e:
-            logging.error(f"Connection error: {str(e)}")
-    return None
+                        logging.warning(f"Rate limited on key: {key[-5:]}")
+            except Exception as e:
+                logging.error(f"API Error: {str(e)}")
+            
+            self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
+        return None
 
-# 25 функций:
+    async def close(self):
+        await self.session.close()
 
-# 1. Защита от флуда
-@dp.message(F.text)
-async def throttle_message(message: Message):
-    user_id = message.from_user.id
-    last_message = user_stats[user_id].get("last_message")
-    if last_message and (datetime.now() - last_message).seconds < 2:
-        await message.answer("⚠️ Слишком много сообщений! Подождите 2 секунды.")
-        return
-    user_stats[user_id]["last_message"] = datetime.now()
+gpt_client = OpenRouterClient(API_KEYS)
 
-    # Ограничение запросов
-    username = message.from_user.username or ""
-    if username.lower() != OWNER_USERNAME.lower():
-        limit_info = user_limits[user_id]
-        now = datetime.utcnow()
-        if now - limit_info["last_reset"] > timedelta(days=1):
-            limit_info["count"] = 0
-            limit_info["last_reset"] = now
-        if limit_info["count"] >= DAILY_LIMIT:
-            await message.answer("⛔ Достигнут дневной лимит запросов. Попробуйте завтра.")
-            return
-        limit_info["count"] += 1
+# Security validators
+def is_admin(user: types.User) -> bool:
+    return user.username.lower() == ADMIN_USERNAME.lower()
 
-    user_stats[user_id]["total_requests"] += 1
-    user_stats[user_id]["last_active"] = datetime.utcnow()
-
-    # Обработка запроса
-    user_histories[user_id].append({"role": "user", "content": message.text})
-    history = trim_history(user_histories[user_id])
-    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    response = await generate_response(history)
-    if response:
-        response = clean_response(response)
-        parts = await split_long_text(response)
-        for part in parts:
-            await message.answer(part)
-        user_histories[user_id].append({"role": "assistant", "content": response})
-    else:
-        await message.answer("⚠️ Ошибка генерации ответа. Попробуйте ещё раз.")
-
-# 2. Статистика
-@dp.message(Command("stats"))
-async def send_stats(message: Message):
-    user_id = message.from_user.id
-    stats = user_stats[user_id]
-    text = (
-        f"📊 Ваша статистика:\n"
-        f"• Всего запросов: {stats['total_requests']}\n"
-        f"• Последняя активность: {stats['last_active'].strftime('%d.%m.%Y %H:%M') if stats['last_active'] else 'Нет данных'}"
-    )
-    await message.answer(text)
-
-# 3. Резервное копирование истории
-async def backup_history():
-    while True:
-        await asyncio.sleep(3600)
-        logging.info("History backup completed")
-
-# 4. Уведомления админу
-async def notify_admin(text: str):
-    await bot.send_message(OWNER_ID, f"🔔 {text}")
-
-# 5. Обработка ошибок
-async def error_handler(update, exception):
-    await notify_admin(f"Ошибка: {str(exception)}")
+async def validate_file(file: types.Document) -> bool:
+    if file.file_size > MAX_FILE_SIZE:
+        return False
+    if file.mime_type not in ALLOWED_MIME_TYPES:
+        return False
     return True
 
-# 6. Логирование действий
-def log_activity(user_id: int, action: str):
-    logging.info(f"User {user_id} {action}")
+# Core handlers
+@dp.message(Command("start"))
+async def start_handler(message: Message):
+    user = message.from_user
+    await message.answer(
+        f"✨ Добро пожаловать, {bold(user.first_name)}!\n\n"
+        "Я ваш персональный AI помощник с следующими возможностями:\n"
+        "• Генерация текстов и идей\n"
+        "• Анализ документов\n"
+        "• Персональные рекомендации\n\n"
+        f"{italic('Лимит запросов:')} {DAILY_LIMIT}/день\n"
+        f"Используйте {code('/help')} для списка команд",
+        reply_markup=main_menu()
+    )
 
-# 7. Подсчёт токенов
-def count_tokens(text: str) -> int:
-    return len(text.split()) // 0.75
+@dp.message(Command("help"))
+async def help_handler(message: Message):
+    help_text = (
+        "🛠 Доступные команды:\n\n"
+        "/start - Перезапустить бота\n"
+        "/help - Справка по командам\n"
+        "/status - Статус лимитов\n"
+        "/reset - Сбросить историю\n"
+        "/feedback - Отправить отзыв\n"
+    )
+    if is_admin(message.from_user):
+        help_text += "\n👑 Админ-команды:\n/reset_all - Полный сброс\n/stats - Статистика"
+    await message.answer(help_text)
 
-# 8. Ограничение длины истории
-def trim_history(history: list) -> list:
-    total = sum(len(m['content']) for m in history)
-    while total > 4000:
-        history.pop(0)
-    return history
+@dp.message(Command("status"))
+async def status_handler(message: Message):
+    user = message.from_user
+    limit_data = storage.limits[user.id]
+    remaining = DAILY_LIMIT - limit_data["count"] if not is_admin(user) else "∞"
+    await message.answer(
+        f"📊 Ваш статус:\n"
+        f"• Использовано запросов: {limit_data['count']}\n"
+        f"• Осталось: {remaining}\n"
+        f"• Следующий сброс: {(limit_data['last_reset'] + timedelta(days=1)).strftime('%d.%m.%Y %H:%M')}"
+    )
 
-# 9. Уровни пользователей
-def calculate_level(requests: int) -> int:
-    return min(requests // 50 + 1, 10)
+@dp.message(Command("reset"))
+async def reset_handler(message: Message):
+    user_id = message.from_user.id
+    storage.histories[user_id].clear()
+    await message.answer("✅ История диалога очищена!")
 
-# 10. Очистка текста
-def clean_response(text: str) -> str:
-    return text.replace("**", "*").strip()
+# Admin commands
+@dp.message(Command("reset_all"))
+async def reset_all_handler(message: Message):
+    if is_admin(message.from_user):
+        storage.histories.clear()
+        storage.limits.clear()
+        await message.answer("🔥 Все данные сброшены!")
+    else:
+        await message.answer("⛔ Недостаточно прав!")
 
-# 11. Генерация ID запроса
-def generate_request_id(user_id: int) -> str:
-    timestamp = int(datetime.now().timestamp())
-    return f"{user_id}_{timestamp}"
+@dp.message(Command("stats"))
+async def stats_handler(message: Message):
+    if is_admin(message.from_user):
+        total_users = len(storage.limits)
+        total_requests = sum(v["count"] for v in storage.limits.values())
+        await message.answer(
+            f"📈 Статистика:\n"
+            f"• Пользователей: {total_users}\n"
+            f"• Всего запросов: {total_requests}\n"
+            f"• Активных диалогов: {len(storage.histories)}"
+        )
+    else:
+        await message.answer("⛔ Недостаточно прав!")
 
-# 12. Валидация файлов
-async def validate_file(file) -> bool:
-    return file.file_size <= MAX_FILE_SIZE and file.mime_type in ALLOWED_TYPES
+# Main processing
+@dp.message(F.text | F.document)
+@rate_limit(limit=5, interval=60)
+async def process_message(message: Message):
+    user = message.from_user
+    if not is_admin(user) and storage.limits[user.id]["count"] >= DAILY_LIMIT:
+        await message.answer(
+            f"⛔ Достигнут дневной лимит {DAILY_LIMIT} запросов!\n"
+            f"Лимит сбросится {(storage.limits[user.id]['last_reset'] + timedelta(days=1)).strftime('%d.%m.%Y %H:%M')}"
+        )
+        return
 
-# 13. Система рейтинга
-@dp.message(F.text.startswith("Оценка"))
-async def rate_response(message: Message):
-    try:
-        _, rating = message.text.split()
-        rating = int(rating)
-        if 1 <= rating <= 5:
-            user_ratings[message.from_user.id] += rating
-            await message.answer("✅ Спасибо за оценку!")
-    except:
-        await message.answer("Используйте формат: Оценка [1-5]")
-
-# 14. Кастомные команды
-# Уже встроены через CUSTOM_COMMANDS
-
-# 15. Очистка неактивных пользователей
-async def clean_inactive_users():
-    while True:
-        await asyncio.sleep(86400)
-        cutoff = datetime.utcnow() - timedelta(days=30)
-        for user_id in list(user_histories):
-            if user_stats[user_id]['last_active'] and user_stats[user_id]['last_active'] < cutoff:
-                del user_histories[user_id]
-
-# 16. Шаблоны ответов
-async def send_template(message: Message, template_name: str):
-    templates = {
-        "help": "🛠 Помощь по командам...",
-        "error": "⚠️ Ошибка обработки..."
-    }
-    await message.answer(templates.get(template_name, "Неизвестный шаблон"))
-
-# 17. Мультиязычность
-@dp.message(Command("lang"))
-async def set_language(message: Message):
-    lang = message.text.split()[-1]
-    if lang in SUPPORTED_LANGS:
-        user_langs[message.from_user.id] = lang
-        await message.answer(f"Язык установлен: {lang.upper()}")
-
-# 18. Кэширование
-@lru_cache(maxsize=100)
-def cached_response(query: str) -> str:
-    return ""
-
-# 19. Разделение длинного текста
-async def split_long_text(text: str, max_len: int = 4000) -> List[str]:
-    return [text[i:i+max_len] for i in range(0, len(text), max_len)]
-
-# 20. Метрики
-async def realtime_metrics():
-    return {
-        "active_users": len(user_histories),
-        "total_requests": sum(u['total_requests'] for u in user_stats.values())
-    }
-
-# 21. Рассылка сообщений
-async def broadcast_message(text: str):
-    for user_id in user_histories:
+    # File processing
+    if message.document:
+        if not await validate_file(message.document):
+            await message.answer("❌ Недопустимый формат файла!")
+            return
         try:
-            await bot.send_message(user_id, text)
-            await asyncio.sleep(0.1)
-        except:
-            continue
+            file = await bot.get_file(message.document.file_id)
+            content = (await bot.download_file(file.file_path)).read().decode()
+        except Exception as e:
+            logging.error(f"File error: {str(e)}")
+            await message.answer("❌ Ошибка обработки файла!")
+            return
+    else:
+        content = message.text
 
-# 22. Модерация контента
-async def check_content(text: str) -> bool:
-    return "опасный контент" not in text.lower()
+    # Generate response
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    storage.histories[user.id].append({"role": "user", "content": content})
+    
+    try:
+        response = await gpt_client.get_response(storage.histories[user.id])
+        if not response:
+            raise ValueError("Empty response")
+    except Exception as e:
+        logging.error(f"Generation error: {str(e)}")
+        await message.answer("⚠️ Ошибка генерации ответа. Попробуйте позже.")
+        return
 
-# 23. Генерация изображений
-async def generate_image(prompt: str):
-    return "https://example.com/generated-image.png"
+    # Update storage
+    storage.histories[user.id].append({"role": "assistant", "content": response})
+    if not is_admin(user):
+        storage.limits[user.id]["count"] += 1
+    storage.last_messages[user.id] = response
 
-# 24. Голосовые ответы
-async def text_to_speech(text: str):
-    return FSInputFile("output.mp3")
+    # Send response
+    await message.answer(response[:4000])  # Telegram message limit
 
-# 25. Резервный API
-async def fallback_api(messages: list):
-    return "Извините, сервис временно недоступен"
+# Web server for health checks
+async def health_handler(request):
+    return web.Response(text="OK")
 
-# Запуск веб-сервера для пинга (если нужен)
-async def start_webserver():
+async def run_webserver():
     app = web.Application()
-    app.router.add_get("/", lambda request: web.Response(text="OK"))
+    app.router.add_get("/", health_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, port=int(os.getenv("PORT", 8080)))
-    await site.start()
+    await web.TCPSite(runner, "0.0.0.0", 8080).start()
 
-# Основной запуск
+# Utilities
+def main_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="💡 Идеи"), KeyboardButton(text="📝 Контент")],
+            [KeyboardButton(text="🎲 Анекдот"), KeyboardButton(text="📊 Статус")],
+            [KeyboardButton(text="🛠 Помощь")]
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выберите действие..."
+    )
+
+async def shutdown():
+    await gpt_client.close()
+    await bot.session.close()
+
 async def main():
-    await start_webserver()
-    asyncio.create_task(clean_inactive_users())
-    asyncio.create_task(backup_history())
+    await run_webserver()
+    await bot.delete_webhook(drop_pending_updates=True)
+    
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, skip_updates=True)
     finally:
-        await bot.session.close()
+        await shutdown()
 
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     asyncio.run(main())
