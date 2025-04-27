@@ -5,7 +5,7 @@ import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, InputFile
 from aiogram.utils.markdown import bold
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -32,6 +32,7 @@ dp = Dispatcher()
 # Память пользователей
 user_histories = defaultdict(list)
 user_limits = defaultdict(lambda: {"count": 0, "last_reset": datetime.utcnow()})
+user_last_messages = defaultdict(str)
 
 # Кнопки
 menu_keyboard = ReplyKeyboardMarkup(
@@ -55,11 +56,12 @@ async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
                     if response.status == 200:
                         data = await response.json()
                         return data["choices"][0]["message"]["content"]
-                    elif response.status in (401, 403, 429):
+                    elif response.status in (401, 403, 429, 500, 502, 503):
                         continue
                     else:
                         break
-        except Exception:
+        except Exception as e:
+            logging.error(f"Ошибка запроса к OpenRouter: {e}")
             continue
 
     headers = {
@@ -74,7 +76,8 @@ async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
                     return data["choices"][0]["message"]["content"]
                 else:
                     return "❗ *Ошибка на стороне OpenAI.*"
-    except Exception:
+    except Exception as e:
+        logging.error(f"Ошибка запроса к OpenAI: {e}")
         return "❗ *Все API-ключи недоступны. Попробуйте позже.*"
 
 async def clear_user_histories():
@@ -82,6 +85,7 @@ async def clear_user_histories():
         await asyncio.sleep(86400)
         user_histories.clear()
         user_limits.clear()
+        user_last_messages.clear()
 
 async def check_limit(user_id: int, username: str):
     now = datetime.utcnow()
@@ -114,16 +118,26 @@ async def cmd_help(message: Message):
         "/help — Помощь\n"
         "/reset — Сбросить историю\n"
         "/menu — Меню кнопок\n"
+        "/last — Показать последний ответ\n"
     )
 
 @dp.message(Command("reset"))
 async def cmd_reset(message: Message):
     user_histories.pop(message.from_user.id, None)
+    user_last_messages.pop(message.from_user.id, None)
     await message.answer("✅ *История очищена!*")
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
     await message.answer("📋 Выберите действие:", reply_markup=menu_keyboard)
+
+@dp.message(Command("last"))
+async def cmd_last(message: Message):
+    last_msg = user_last_messages.get(message.from_user.id)
+    if last_msg:
+        await message.answer(f"📝 *Последний ответ:*\n\n{last_msg}")
+    else:
+        await message.answer("❗ *Нет последнего ответа.*")
 
 @dp.message(F.text)
 async def handle_text(message: Message):
@@ -139,7 +153,11 @@ async def handle_text(message: Message):
 
     response = await ask_gpt(user_histories[user_id], API_KEYS)
 
+    if not response:
+        response = "❗ *Ответ не получен. Попробуйте ещё раз.*"
+
     user_histories[user_id].append({"role": "assistant", "content": response})
+    user_last_messages[user_id] = response
     await increment_limit(user_id)
 
     await message.answer(response)
@@ -161,7 +179,11 @@ async def handle_document(message: Message):
 
     response = await ask_gpt(user_histories[user_id], API_KEYS)
 
+    if not response:
+        response = "❗ *Ответ не получен. Попробуйте ещё раз.*"
+
     user_histories[user_id].append({"role": "assistant", "content": response})
+    user_last_messages[user_id] = response
     await increment_limit(user_id)
 
     await message.answer(response)
@@ -186,7 +208,7 @@ async def start_webserver():
 async def main():
     asyncio.create_task(start_webserver())
     asyncio.create_task(clear_user_histories())
-    await bot.delete_webhook(drop_pending_updates=True)  # <--- Вставил сюда удаление вебхука
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
