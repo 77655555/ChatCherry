@@ -3,7 +3,7 @@ import logging
 import aiohttp
 import asyncio
 from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ChatAction
 from aiogram.filters import Command
 from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, InputFile
 from aiogram.utils.markdown import bold
@@ -141,7 +141,7 @@ async def cmd_last(message: Message):
 
 @dp.message(F.text)
 async def handle_text(message: Message):
-    await bot.send_chat_action(message.chat.id, action="typing")
+    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id
     username = message.from_user.username or ""
 
@@ -164,7 +164,7 @@ async def handle_text(message: Message):
 
 @dp.message(F.document)
 async def handle_document(message: Message):
-    await bot.send_chat_action(message.chat.id, action="typing")
+    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id
     username = message.from_user.username or ""
 
@@ -190,7 +190,7 @@ async def handle_document(message: Message):
 
 @dp.message(F.voice)
 async def handle_voice(message: Message):
-    await bot.send_chat_action(message.chat.id, action="typing")
+    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     await message.answer("🎙 *Пока не поддерживаю голосовые сообщения!*")
 
 # Сервер для UptimeRobot
