@@ -57,13 +57,17 @@ async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
                         data = await response.json()
                         return data["choices"][0]["message"]["content"]
                     elif response.status in (401, 403, 429, 500, 502, 503):
+                        logging.warning(f"API error ({response.status}) for key {key}. Retrying...")
+                        await asyncio.sleep(5)  # wait before retrying
                         continue
                     else:
+                        logging.error(f"Unexpected error {response.status} for key {key}.")
                         break
         except Exception as e:
-            logging.error(f"Ошибка запроса к OpenRouter: {e}")
+            logging.error(f"Ошибка запроса к OpenRouter с ключом {key}: {e}")
             continue
 
+    # fallback to OpenAI key if all API keys fail
     headers = {
         "Authorization": f"Bearer {OPENAI_KEY}",
         "Content-Type": "application/json",
@@ -75,6 +79,7 @@ async def ask_gpt(messages: List[Dict[str, Any]], api_keys: List[str]):
                     data = await response.json()
                     return data["choices"][0]["message"]["content"]
                 else:
+                    logging.error(f"OpenAI API error: {response.status}")
                     return "❗ *Ошибка на стороне OpenAI.*"
     except Exception as e:
         logging.error(f"Ошибка запроса к OpenAI: {e}")
@@ -172,8 +177,13 @@ async def handle_document(message: Message):
         await message.answer("⛔ *Достигнут лимит 10 сообщений в сутки.*")
         return
 
-    file = await bot.download(message.document.file_id)
-    content = (await file.read()).decode("utf-8")
+    try:
+        file = await bot.download(message.document.file_id)
+        content = (await file.read()).decode("utf-8")
+    except Exception as e:
+        logging.error(f"Ошибка при обработке документа: {e}")
+        await message.answer("❗ *Не удалось обработать документ.*")
+        return
 
     user_histories[user_id].append({"role": "user", "content": content})
 
