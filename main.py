@@ -31,7 +31,7 @@ bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
 dp = Dispatcher()
-
+)
 # Хранилища данных
 user_histories = defaultdict(list)
 user_limits = defaultdict(lambda: {"count": 0, "last_reset": datetime.utcnow()})
