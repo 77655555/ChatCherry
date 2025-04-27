@@ -1,142 +1,225 @@
 import os
 import logging
-import aiohttp
 import asyncio
-import time
-from functools import wraps
-from datetime import datetime, timedelta, timezone
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.enums import ParseMode, ChatAction
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
-from aiogram.utils.markdown import bold, italic, code
-from collections import defaultdict
-from aiohttp import web
-from dotenv import load_dotenv
-
-# Инициализация окружения
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()]
-ADMIN_USERNAME = "@qqq5599"
-DAILY_LIMIT = 10
-MAX_HISTORY_LENGTH = 10
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
-ALLOWED_MIME_TYPES = ['text/plain', 'application/pdf']
-
-# Исправлено: Добавлены закрывающие скобки для Bot
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2)
+import sqlite3
+import random
+import requests
+import socket
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters
 )
-dp = Dispatcher()
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import openai
+from io import BytesIO
+import qrcode
 
-# Улучшенное хранилище с периодической очисткой
-class UserStorage:
-    def __init__(self):
-        self.histories = defaultdict(list)
-        self.limits = defaultdict(lambda: {
-            "count": 0, 
-            "last_reset": datetime.now(timezone.utc)
-        })
-        self.last_messages = defaultdict(str)
-        self.user_settings = defaultdict(dict)
-        self.cleanup_task = None
+# ===== КОНФИГУРАЦИЯ =====
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+WEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # Ваш ID чата для уведомлений
 
-    async def start_periodic_cleanup(self):
-        while True:
-            await asyncio.sleep(3600)  # Каждый час
-            self.cleanup()
+# Инициализация OpenAI
+openai.api_key = OPENAI_API_KEY
 
-    def cleanup(self):
-        now = datetime.now(timezone.utc)
-        for user_id in list(self.limits):
-            if (now - self.limits[user_id]["last_reset"]).days > 30:
-                del self.limits[user_id]
-                del self.histories[user_id]
-                del self.last_messages[user_id]
+# ===== БАЗА ДАННЫХ =====
+DB_NAME = "bot_database.db"
 
-storage = UserStorage()
+def init_db():
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        # Пользователи
+        c.execute('''CREATE TABLE IF NOT EXISTS users
+                     (id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 100)''')
+        # Мониторинг сервисов
+        c.execute('''CREATE TABLE IF NOT EXISTS services
+                     (id INTEGER PRIMARY KEY, name TEXT, url TEXT, last_status TEXT)''')
+        conn.commit()
 
-# Улучшенный rate limiter с использованием monotonic
-def rate_limit(limit: int = 3, interval: int = 60):
-    def decorator(func):
-        last_calls = defaultdict(float)
+init_db()
+
+# ===== УТИЛИТЫ =====
+async def is_admin(update: Update):
+    return update.effective_user.id == int(ADMIN_CHAT_ID)
+
+# ===== ФУНКЦИИ UPTIME =====
+async def ping_service(url: str) -> float:
+    try:
+        start_time = datetime.now()
+        await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: socket.create_connection((url, 80), 5)
+            ), 
+            timeout=5
+        )
+        return (datetime.now() - start_time).total_seconds() * 1000
+    except:
+        return -1
+
+async def auto_monitor(context: ContextTypes.DEFAULT_TYPE):
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("SELECT url FROM services")
+        services = c.fetchall()
         
-        @wraps(func)
-        async def wrapper(message: Message, *args, **kwargs):
-            user_id = message.from_user.id
-            now = time.monotonic()
-            if now - last_calls[user_id] < interval:
-                await message.answer("⚠️ Слишком много запросов! Подождите немного.")
-                return
-            last_calls[user_id] = now
-            return await func(message, *args, **kwargs)
-        return wrapper
-    return decorator
-
-# Улучшенный клиент OpenRouter с обработкой ошибок
-class OpenRouterClient:
-    def __init__(self, api_keys: list):
-        self.api_keys = api_keys
-        self.session = aiohttp.ClientSession()
-        self.current_key_idx = 0
-
-    async def get_response(self, messages: list) -> Optional[str]:
-        for _ in range(len(self.api_keys)):
-            key = self.api_keys[self.current_key_idx]
-            try:
-                async with self.session.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {key}"},
-                    json={
-                        "model": "gpt-3.5-turbo",
-                        "messages": messages[-MAX_HISTORY_LENGTH:],
-                        "temperature": 0.7,
-                        "max_tokens": 1500
-                    },
-                    timeout=30
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if 'choices' in data and len(data['choices']) > 0:
-                            return data['choices'][0]['message']['content']
-                        return "Ошибка: пустой ответ от API"
-                    elif response.status == 429:
-                        logging.warning(f"Rate limited on key: {key[-5:]}")
-            except Exception as e:
-                logging.error(f"API Error: {str(e)}")
+        for service in services:
+            latency = await ping_service(service[0])
+            status = "🟢 ONLINE" if latency != -1 else "🔴 OFFLINE"
             
-            self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
-        return None
+            c.execute("UPDATE services SET last_status = ? WHERE url = ?", 
+                      (status, service[0]))
+            
+            if latency == -1:
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=f"🚨 SERVICE DOWN: {service[0]}"
+                )
 
-    async def close(self):
-        await self.session.close()
+# ===== КОМАНДЫ БОТА =====
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)",
+                    (user.id, user.username))
+        conn.commit()
+    
+    await update.message.reply_html(
+        f"🚀 Привет, {user.mention_html()}!\n"
+        "Доступные команды:\n"
+        "/ping <url> - Проверить доступность\n"
+        "/monitor_add <url> - Добавить в мониторинг\n"
+        "/status - Статус всех сервисов\n"
+        "/gpt <текст> - ChatGPT\n"
+        "/weather <город> - Погода\n"
+        "/qr <текст> - Генератор QR-кода\n"
+        "/admin - Админ-панель"
+    )
 
-gpt_client = OpenRouterClient(API_KEYS)
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Укажите URL: /ping google.com")
+        return
+    
+    url = args[0]
+    latency = await ping_service(url)
+    
+    if latency == -1:
+        await update.message.reply_text(f"🔴 {url} недоступен!")
+    else:
+        await update.message.reply_text(f"🟢 {url} - {latency:.2f} мс")
 
-# Обработчики команд и сообщений остаются аналогичными, но с улучшениями...
+async def cmd_monitor_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update):
+        await update.message.reply_text("❌ Только для админов!")
+        return
+    
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("Использование: /monitor_add <имя> <url>")
+        return
+    
+    name, url = args[0], args[1]
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("INSERT INTO services (name, url) VALUES (?, ?)", (name, url))
+        conn.commit()
+    
+    await update.message.reply_text(f"✅ Сервис {name} добавлен в мониторинг")
 
-async def shutdown():
-    await gpt_client.close()
-    await bot.close()  # Исправленный метод закрытия бота
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("SELECT name, url, last_status FROM services")
+        services = c.fetchall()
+    
+    response = "📊 Статус сервисов:\n\n" + "\n".join(
+        [f"{s[0]} ({s[1]}): {s[2]}" for s in services]
+    )
+    await update.message.reply_text(response)
 
-async def main():
-    await run_webserver()
-    storage.cleanup_task = asyncio.create_task(storage.start_periodic_cleanup())
-    await bot.delete_webhook(drop_pending_updates=True)
+# ===== ДОП. ФУНКЦИИ =====
+async def cmd_gpt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = " ".join(context.args)
+    if not prompt:
+        await update.message.reply_text("Напишите запрос: /gpt Как работает Вселенная?")
+        return
     
     try:
-        await dp.start_polling(bot)
-    finally:
-        await shutdown()
-        if storage.cleanup_task:
-            storage.cleanup_task.cancel()
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        await update.message.reply_text(response.choices[0].message['content'])
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
+
+async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    city = " ".join(context.args)
+    if not city:
+        await update.message.reply_text("Укажите город: /weather Москва")
+        return
+    
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=ru"
+    response = requests.get(url).json()
+    
+    if response.get("cod") != 200:
+        await update.message.reply_text("🚫 Город не найден")
+    else:
+        weather_desc = response['weather'][0]['description'].capitalize()
+        temp = response['main']['temp']
+        await update.message.reply_text(
+            f"🌍 {city}\n"
+            f"🌡 {temp}°C\n"
+            f"☁️ {weather_desc}"
+        )
+
+async def cmd_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text("Введите текст: /qr Hello World")
+        return
+    
+    img = qrcode.make(text)
+    bio = BytesIO()
+    img.save(bio, "PNG")
+    bio.seek(0)
+    
+    await update.message.reply_photo(photo=InputFile(bio))
+
+# ===== ЗАПУСК =====
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    
+    # Планировщик для авто-мониторинга
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(auto_monitor, 'interval', minutes=5, args=[app])
+    scheduler.start()
+    
+    # Обработчики команд
+    handlers = [
+        CommandHandler("start", start),
+        CommandHandler("ping", cmd_ping),
+        CommandHandler("monitor_add", cmd_monitor_add),
+        CommandHandler("status", cmd_status),
+        CommandHandler("gpt", cmd_gpt),
+        CommandHandler("weather", cmd_weather),
+        CommandHandler("qr", cmd_qr),
+    ]
+    
+    for handler in handlers:
+        app.add_handler(handler)
+    
+    # Запуск бота
+    app.run_polling()
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO)
+    main()
