@@ -21,6 +21,8 @@ from aiogram.utils.chat_action import ChatActionMiddleware
 from pydub import AudioSegment
 import speech_recognition as sr
 from dotenv import load_dotenv
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, AiohttpWebserverFactory
+from aiohttp import web
 
 # Настройка логирования
 logging.basicConfig(
@@ -39,6 +41,10 @@ DAILY_MESSAGE_LIMIT = int(os.getenv("DAILY_MESSAGE_LIMIT", "50"))
 HTTP_RETRY_COUNT = int(os.getenv("HTTP_RETRY_COUNT", "3"))
 MESSAGE_HISTORY_LIMIT = int(os.getenv("MESSAGE_HISTORY_LIMIT", "50"))
 HISTORY_EXPIRATION_HOURS = int(os.getenv("HISTORY_EXPIRATION_HOURS", "24"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # URL вашего Render веб-сервиса
+WEB_SERVER_HOST = os.getenv("WEB_SERVER_HOST", "0.0.0.0")
+WEB_SERVER_PORT = int(os.getenv("PORT", 10000))
+
 
 # Класс для хранения информации о пользователе
 class UserData:
@@ -92,7 +98,7 @@ class UserData:
 user_data: Dict[int, UserData] = {}
 
 # Инициализация бота и диспетчера
-bot = Bot(token=TOKEN)
+bot = Bot(token=TOKEN, parse_mode="Markdown")
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
@@ -529,21 +535,67 @@ async def unknown_message(message: Message):
     )
 
 # Функция для запуска веб-сервера (для работы с Render.com)
-async def on_startup():
+async def on_startup(bot: Bot, webhook_url: str):
     # Запуск фоновой задачи по очистке устаревшей истории
     asyncio.create_task(cleanup_expired_history())
     
-    # Установка вебхука (если нужно для Render.com)
-    webhook_url = os.getenv("WEBHOOK_URL")
-    if webhook_url:
+    # Установка webhook
+    try:
         await bot.set_webhook(webhook_url)
-    
-    logger.info("Bot started!")
+        logger.info(f"Webhook set to {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+
+async def on_shutdown(bot: Bot):
+    logger.warning("Shutting down..")
+    await bot.delete_webhook()
+    await bot.session.close()
+    logger.warning("Bye!")
 
 # Основная функция запуска бота
 async def main():
-    await on_startup()
-    await dp.start_polling(bot)
+    # Инициализация бота и диспетчера
+    bot = Bot(token=TOKEN, parse_mode="Markdown")
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(router)
+
+    # Регистрация middleware
+    dp.message.middleware(ChatActionMiddleware())
+
+    # Настройка webhook
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if not webhook_url:
+        raise ValueError("WEBHOOK_URL не установлен")
+
+    # Установка webhook
+    await on_startup(bot, webhook_url)
+
+    # Настройка веб-сервера
+    web_app = web.Application()
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(web_app, path="/webhook")  # Укажите путь для webhook
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)  # Используйте 0.0.0.0 и PORT
+    await site.start()
+
+    # Запуск очистки истории
+    asyncio.create_task(cleanup_expired_history())
+
+    logger.info("Bot started")
+
+    # Держите приложение работающим
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await on_shutdown(bot)
+        await runner.cleanup()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot stopped")
