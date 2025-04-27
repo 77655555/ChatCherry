@@ -1,280 +1,203 @@
-# bot.py - Full Telegram Bot with OpenRouter AI Integration
-
 import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 import dotenv
-import aiofiles
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
-    Message, 
-    ReplyKeyboardMarkup, 
-    KeyboardButton, 
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton
+    Message, ReplyKeyboardMarkup, KeyboardButton, 
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    Document, Voice
 )
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+import speech_recognition as sr
+from pydub import AudioSegment
 
-# Загрузка переменных окружения
-dotenv.load_dotenv()
+# Расширенная конфигурация
+class Config:
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    OPENROUTER_API_KEYS = os.getenv('OPENROUTER_API_KEYS', '').split(',')
+    DAILY_MESSAGE_LIMIT = int(os.getenv('DAILY_MESSAGE_LIMIT', 50))
+    MAX_MESSAGE_LENGTH = 4096
+    CONTEXT_WINDOW = 10
+    SUPPORTED_DOCUMENT_TYPES = ['.txt', '.pdf', '.md']
 
-# Конфигурация бота
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-OPENROUTER_API_KEYS = os.getenv('OPENROUTER_API_KEYS', '').split(',')
-DAILY_MESSAGE_LIMIT = int(os.getenv('DAILY_MESSAGE_LIMIT', 50))
-
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
+# Расширенное логирование
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
-class UserStates(StatesGroup):
+class AdvancedUserStates(StatesGroup):
     waiting_for_input = State()
+    processing_document = State()
+    voice_transcription = State()
 
-class TelegramAIBot:
-    def __init__(self, bot_token: str, openrouter_keys: List[str]):
-        self.bot = Bot(token=bot_token)
+class AIBotManager:
+    def __init__(self):
+        self.bot = Bot(
+            token=Config.TELEGRAM_BOT_TOKEN, 
+            default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+        )
         self.dp = Dispatcher()
-        self.openrouter_keys = openrouter_keys
-        self.current_key_index = 0
         
-        # Инициализация хранилищ
-        self.user_messages = {}
-        self.user_daily_messages = {}
+        # Передовые хранилища
+        self.user_contexts = {}
+        self.user_stats = {}
+        
+        # Менеджеры ресурсов
+        self.rate_limiter = RateLimiter()
+        self.error_handler = ErrorHandler()
+        
+        self._register_handlers()
 
-        # Регистрация хендлеров
-        self.register_handlers()
-
-    def register_handlers(self):
-        # Основные команды
-        self.dp.message(Command("start"))(self.handle_start)
-        self.dp.message(Command("help"))(self.handle_help)
-        self.dp.message(Command("reset"))(self.handle_reset)
-        self.dp.message(Command("menu"))(self.handle_menu)
-
-        # Обработка сообщений
-        self.dp.message(F.text)(self.handle_text_message)
+    def _register_handlers(self):
+        # Расширенные обработчики команд
+        handlers = {
+            "start": self.handle_start,
+            "help": self.handle_help,
+            "reset": self.handle_reset,
+            "stats": self.handle_stats
+        }
+        
+        for command, handler in handlers.items():
+            self.dp.message(Command(command))(handler)
+        
+        # Обработка различных типов сообщений
+        self.dp.message(F.text)(self.handle_text)
         self.dp.message(F.document)(self.handle_document)
         self.dp.message(F.voice)(self.handle_voice)
 
     async def handle_start(self, message: Message):
-        # Обработчик команды /start
-        keyboard = ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="📝 Начать чат")],
-            [KeyboardButton(text="ℹ️ Помощь")]
-        ], resize_keyboard=True)
-        
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="🤖 Начать чат")],
+                [KeyboardButton(text="📊 Статистика")]
+            ],
+            resize_keyboard=True
+        )
         await message.answer(
-            "Привет! Я AI-бот с поддержкой OpenRouter. Готов помочь вам.",
+            "Привет! Я мощный AI-ассистент с расширенными возможностями.",
             reply_markup=keyboard
         )
 
-    async def handle_help(self, message: Message):
-        # Обработчик команды /help
-        help_text = """
-🤖 Справка по боту:
-• /start - Начать общение
-• /help - Показать справку
-• /reset - Сбросить контекст диалога
-• /menu - Открыть меню
-
-Я могу обрабатывать текст, документы и голосовые сообщения.
-"""
-        await message.answer(help_text)
-
-    async def handle_reset(self, message: Message):
-        # Сброс контекста для пользователя
-        user_id = message.from_user.id
-        if user_id in self.user_messages:
-            del self.user_messages[user_id]
-        await message.answer("🔄 История диалога сброшена.")
-
-    async def handle_menu(self, message: Message):
-        # Создание inline-клавиатуры
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🤖 О боте", callback_data="about")],
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")]
-        ])
-        await message.answer("Меню:", reply_markup=keyboard)
-
-    async def handle_text_message(self, message: Message):
-        # Основная логика обработки текстовых сообщений
-        user_id = message.from_user.id
-        
-        # Проверка лимита сообщений
-        if not self.check_daily_limit(user_id):
-            await message.answer("⚠️ Превышен дневной лимит сообщений.")
-            return
-
-        # Имитация печати
-        await self.bot.send_chat_action(message.chat.id, "typing")
-
-        # Логика работы с OpenRouter AI
+    async def handle_text(self, message: Message):
         try:
-            response = await self.get_ai_response(user_id, message.text)
-            await message.reply(response, parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Ошибка при получении ответа: {e}")
-            await message.answer("🚫 Произошла ошибка. Попробуйте позже.")
+            # Проверка лимитов и безопасности
+            if not self.rate_limiter.check_user_limit(message.from_user.id):
+                return await message.reply("⚠️ Превышен лимит сообщений")
 
-    async def handle_document(self, message: Message):
-        # Обработка документов
-        user_id = message.from_user.id
-        
-        if not self.check_daily_limit(user_id):
-            await message.answer("⚠️ Превышен дневной лимит сообщений.")
-            return
-
-        try:
-            file = await self.bot.get_file(message.document.file_id)
-            file_path = file.file_path
+            # Получение AI-ответа
+            response = await self._get_ai_response(
+                message.from_user.id, 
+                message.text
+            )
             
+            # Разбитие длинных сообщений
+            for chunk in self._split_long_message(response):
+                await message.reply(chunk)
+
+        except Exception as e:
+            await self.error_handler.handle(message, e)
+
+    async def _get_ai_response(self, user_id: int, text: str) -> str:
+        # Управление контекстом и получение ответа
+        context = self._get_user_context(user_id)
+        context.append({"role": "user", "content": text})
+        
+        try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f'https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}') as response:
-                    content = await response.read()
-                    text_content = content.decode('utf-8', errors='ignore')[:4000]
-            
-            await self.bot.send_chat_action(message.chat.id, "typing")
-            response = await self.get_ai_response(user_id, f"Содержимое документа: {text_content}")
-            await message.reply(response, parse_mode="Markdown")
-        
+                response = await self._call_openrouter(session, context)
+                context.append({"role": "assistant", "content": response})
+                return response
         except Exception as e:
-            logger.error(f"Ошибка при обработке документа: {e}")
-            await message.answer("🚫 Не удалось обработать документ.")
+            logger.error(f"AI Response Error: {e}")
+            return "Произошла ошибка при генерации ответа."
 
-    async def handle_voice(self, message: Message):
-        # Обработка голосовых сообщений
-        user_id = message.from_user.id
+    async def _call_openrouter(self, session, messages):
+        # Интеллектуальный выбор и ротация API-ключей
+        headers = {
+            "Authorization": f"Bearer {self._select_api_key()}",
+            "Content-Type": "application/json"
+        }
         
-        if not self.check_daily_limit(user_id):
-            await message.answer("⚠️ Превышен дневной лимит сообщений.")
-            return
+        async with session.post(
+            "https://openrouter.ai/api/v1/chat/completions", 
+            json={
+                "model": "openai/gpt-3.5-turbo",
+                "messages": messages[-Config.CONTEXT_WINDOW:]
+            },
+            headers=headers
+        ) as response:
+            data = await response.json()
+            return data['choices'][0]['message']['content']
 
-        try:
-            file = await self.bot.get_file(message.voice.file_id)
-            file_path = file.file_path
-            
-            # Здесь должна быть интеграция с сервисом распознавания речи
-            # Для простоты используем заглушку
-            transcription = "Голосовое сообщение не распознано"
-            
-            await self.bot.send_chat_action(message.chat.id, "typing")
-            response = await self.get_ai_response(user_id, transcription)
-            await message.reply(response, parse_mode="Markdown")
-        
-        except Exception as e:
-            logger.error(f"Ошибка при обработке голосового: {e}")
-            await message.answer("🚫 Не удалось обработать голосовое сообщение.")
+    def _select_api_key(self):
+        # Циклический выбор и обработка ключей
+        key = Config.OPENROUTER_API_KEYS[0]
+        Config.OPENROUTER_API_KEYS.append(
+            Config.OPENROUTER_API_KEYS.pop(0)
+        )
+        return key
 
-    async def get_ai_response(self, user_id: int, message_text: str) -> str:
-        # Управление историей сообщений
-        if user_id not in self.user_messages:
-            self.user_messages[user_id] = []
-        
-        self.user_messages[user_id].append({"role": "user", "content": message_text})
-        
-        # Очистка истории если больше 50 сообщений или старше 24 часов
-        self.clean_message_history(user_id)
+    def _get_user_context(self, user_id):
+        if user_id not in self.user_contexts:
+            self.user_contexts[user_id] = []
+        return self.user_contexts[user_id]
 
-        messages = self.user_messages[user_id][-10:]  # Берем последние 10 сообщений
+    def _split_long_message(self, text: str) -> List[str]:
+        return [
+            text[i:i+Config.MAX_MESSAGE_LENGTH] 
+            for i in range(0, len(text), Config.MAX_MESSAGE_LENGTH)
+        ]
 
-        # Циклический перебор API-ключей
-        for _ in range(len(self.openrouter_keys)):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    payload = {
-                        "model": "openai/gpt-3.5-turbo",
-                        "messages": messages
-                    }
-                    headers = {
-                        "Authorization": f"Bearer {self.openrouter_keys[self.current_key_index]}",
-                        "Content-Type": "application/json"
-                    }
-                    
-                    async with session.post(
-                        "https://openrouter.ai/api/v1/chat/completions", 
-                        json=payload, 
-                        headers=headers
-                    ) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            response_text = result['choices'][0]['message']['content']
-                            
-                            # Добавляем ответ в историю
-                            self.user_messages[user_id].append({
-                                "role": "assistant", 
-                                "content": response_text
-                            })
-                            
-                            return response_text
-                        
-                        elif response.status == 429:
-                            # Переключаемся на следующий ключ при превышении лимита
-                            self.current_key_index = (self.current_key_index + 1) % len(self.openrouter_keys)
-                        else:
-                            logger.error(f"Ошибка OpenRouter: {await response.text()}")
-            
-            except Exception as e:
-                logger.error(f"Ошибка при запросе к OpenRouter: {e}")
-                self.current_key_index = (self.current_key_index + 1) % len(self.openrouter_keys)
-        
-        return "🚫 Все API-ключи исчерпаны. Попробуйте позже."
-
-    def check_daily_limit(self, user_id: int) -> bool:
-        # Проверка дневного лимита сообщений
-        current_time = datetime.now()
-        
-        if user_id not in self.user_daily_messages:
-            self.user_daily_messages[user_id] = {
-                'count': 1,
-                'timestamp': current_time
+class RateLimiter:
+    def __init__(self):
+        self.user_limits = {}
+    
+    def check_user_limit(self, user_id: int) -> bool:
+        now = datetime.now()
+        if user_id not in self.user_limits:
+            self.user_limits[user_id] = {
+                'count': 1, 
+                'timestamp': now
             }
             return True
         
-        user_data = self.user_daily_messages[user_id]
-        time_diff = current_time - user_data['timestamp']
-        
-        if time_diff > timedelta(days=1):
-            # Сброс счетчика после 24 часов
+        user_data = self.user_limits[user_id]
+        if (now - user_data['timestamp']).days >= 1:
             user_data['count'] = 1
-            user_data['timestamp'] = current_time
+            user_data['timestamp'] = now
             return True
         
-        if user_data['count'] < DAILY_MESSAGE_LIMIT:
-            user_data['count'] += 1
-            return True
-        
-        return False
+        return user_data['count'] < Config.DAILY_MESSAGE_LIMIT
 
-    def clean_message_history(self, user_id: int):
-        # Очистка истории сообщений
-        current_time = datetime.now()
-        
-        if user_id in self.user_messages:
-            self.user_messages[user_id] = [
-                msg for msg in self.user_messages[user_id] 
-                if (current_time - datetime.fromtimestamp(msg.get('timestamp', current_time.timestamp()))) 
-                   < timedelta(hours=24)
-            ]
-            
-            if len(self.user_messages[user_id]) > 50:
-                self.user_messages[user_id] = self.user_messages[user_id][-50:]
-
-    async def start_bot(self):
-        try:
-            await self.dp.start_polling(self.bot)
-        except Exception as e:
-            logger.error(f"Ошибка при запуске бота: {e}")
+class ErrorHandler:
+    async def handle(self, message: Message, error: Exception):
+        error_id = hash(str(error))
+        logger.error(f"Error {error_id}: {error}")
+        await message.reply(
+            f"❌ Произошла ошибка (ID: {error_id}). "
+            "Техническая поддержка уже извещена."
+        )
 
 async def main():
-    bot = TelegramAIBot(TELEGRAM_BOT_TOKEN, OPENROUTER_API_KEYS)
-    await bot.start_bot()
+    bot_manager = AIBotManager()
+    await bot_manager.dp.start_polling(bot_manager.bot)
 
 if __name__ == '__main__':
+    dotenv.load_dotenv()
     asyncio.run(main())
