@@ -44,25 +44,16 @@ async def reset_daily_limits(context: ContextTypes.DEFAULT_TYPE):
     try:
         async with data_lock:
             current_time = datetime.now()
-            midnight = (current_time + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            wait_seconds = (midnight - current_time).total_seconds()
-            
-            logger.info(f"Запланирован сброс лимитов через {wait_seconds} секунд")
-            await asyncio.sleep(wait_seconds)
+            logger.info("Начало сброса дневных лимитов...")
             
             for user_id in list(user_data.keys()):
                 if user_data[user_id].get('username') != ADMIN_USERNAME:
                     user_data[user_id]['messages_today'] = 0
             
-            logger.info("Дневные лимиты сообщений сброшены")
-            
-            # Планируем следующий сброс
-            context.job_queue.run_once(reset_daily_limits, when=0)
+            logger.info("Дневные лимиты успешно сброшены")
             
     except Exception as e:
-        logger.error(f"Ошибка в reset_daily_limits: {str(e)}")
+        logger.error(f"Ошибка при сбросе лимитов: {str(e)}")
 
 async def call_openrouter_api(prompt: str) -> str:
     """Улучшенный вызов API с ротацией ключей"""
@@ -199,7 +190,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Инициализация и запуск бота"""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application = Application.builder().token(TELEGRAM_TOKEN).arbitrary_callback_data(True).build()
     
     # Регистрация обработчиков
     handlers = [
@@ -214,8 +205,12 @@ def main():
     
     application.add_error_handler(error_handler)
     
-    # Планирование периодических задач
-    application.job_queue.run_once(reset_daily_limits, when=0)
+    # Планирование ежедневного сброса в 00:00
+    application.job_queue.run_daily(
+        reset_daily_limits,
+        time=datetime.strptime("00:00", "%H:%M").time(),
+        days=(0, 1, 2, 3, 4, 5, 6)
+    )
     
     application.run_polling(drop_pending_updates=True)
 
