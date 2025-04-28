@@ -1,133 +1,229 @@
 import os
-import logging
-import aiohttp
-import asyncio
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
-from aiogram.filters import Command
-from dotenv import load_dotenv
-from datetime import datetime
 import json
-import base64
-import random
-import googletrans
-from googletrans import LANGUAGES
-from typing import List, Dict, Any
+import logging
+import asyncio
+import time
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import aiohttp
+from datetime import datetime, timedelta
 
-# --- ЗАГРУЗКА КОНФИГУРАЦИИ ---
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_USERNAME = "qqq5599"
-OWNER_ID = int(os.getenv("OWNER_ID", "9995599"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", None)
+# Настройка логирования
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-API_KEY = os.getenv("API_KEY", "")  # Вставьте сюда ваш ключ из https://openrouter.ai/settings/keys
+# Токен Telegram-бота
+TELEGRAM_TOKEN = "8035488978:AAFMLVN3Ya_E4GYeWrxnKUkrAlGMirSP8gw"
+
+# API ключи OpenRouter - будут использоваться последовательно, если один не работает
+API_KEYS = [
+    "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",
+    "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",
+    "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",
+    "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",
+    "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"
+]
+
+# Конфигурация модели
 MODEL = "deepseek/deepseek-r1"
+ADMIN_USERNAME = "qqq5599"  # Имя пользователя администратора без @
+FREE_MESSAGES_PER_DAY = 10  # Количество бесплатных сообщений для обычных пользователей
 
-# --- ЛОГИРОВАНИЕ ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+# Хранение пользовательских данных - счетчик сообщений и время сброса
+user_data = {}
 
-# --- ХРАНИЛИЩА ---
-user_histories = {}
-
-# --- КЛАВИАТУРА ---
-menu_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="Анекдот"), KeyboardButton(text="Мотивация")],
-    [KeyboardButton(text="Идеи"), KeyboardButton(text="Статья")],
-    [KeyboardButton(text="Статистика"), KeyboardButton(text="Помощь")],
-], resize_keyboard=True)
-
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def process_content(content):
-    # Удаляем теги <think> и </think>
+    """Обработка контента путем удаления тегов <think>"""
     return content.replace('<think>', '').replace('</think>', '')
 
-async def chat_stream(prompt: str, user_id: int) -> str:
+async def reset_daily_limits():
+    """Сброс дневных лимитов сообщений в полночь"""
+    while True:
+        now = datetime.now()
+        midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time())
+        seconds_until_midnight = (midnight - now).total_seconds()
+        
+        # Спим до полуночи
+        await asyncio.sleep(seconds_until_midnight)
+        
+        # Сбрасываем лимиты пользователей
+        for user_id in user_data:
+            if user_id != ADMIN_USERNAME:
+                user_data[user_id]['messages_today'] = 0
+        
+        logger.info("Дневные лимиты сообщений сброшены")
+
+async def call_openrouter_api(prompt, current_key_index=0):
+    """Вызов API OpenRouter с запросом, перебор ключей при необходимости"""
+    if current_key_index >= len(API_KEYS):
+        return "Ошибка: Все API ключи исчерпаны. Пожалуйста, попробуйте позже."
+    
+    current_key = API_KEYS[current_key_index]
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
+        "Authorization": f"Bearer {current_key}",
         "Content-Type": "application/json"
     }
-
+    
     data = {
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "stream": True
+        "stream": False  # Используем non-streaming для простоты в боте
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data) as response:
-            if response.status != 200:
-                logging.warning(f"Ошибка API: {response.status}")
-                return "⚠️ Ошибка при обработке запроса."
-                
-            full_response = []
-            async for chunk in response.content.iter_any():
-                if chunk:
-                    chunk_str = chunk.decode('utf-8').replace('data: ', '')
-                    try:
-                        chunk_json = json.loads(chunk_str)
-                        if "choices" in chunk_json:
-                            content = chunk_json["choices"][0]["delta"].get("content", "")
-                            if content:
-                                cleaned = process_content(content)
-                                full_response.append(cleaned)
-                    except Exception as e:
-                        logging.error(f"Ошибка обработки данных: {e}")
-
-            return ''.join(full_response)
-
-# --- ОБРАБОТКА КОМАНД ---
-@dp.message(Command("start"))
-async def cmd_start(m: Message):
-    await m.answer("👋 Привет! Выберите действие:", reply_markup=menu_kb)
-
-@dp.message(Command("help"))
-async def cmd_help(m: Message):
-    await m.answer("/start /help - Для получения помощи")
-
-# --- ОБРАБОТКА ТЕКСТА ---
-@dp.message(F.text & ~F.command)
-async def handle_text(m: Message):
-    uid = m.from_user.id
-    user_input = m.text
-
-    if user_input.lower() == 'exit':
-        # Завершаем работу, очищаем историю
-        if uid in user_histories:
-            del user_histories[uid]
-        return await m.answer("Завершение работы...")
-
-    # Вставляем историю для пользователя, если её нет
-    if uid not in user_histories:
-        user_histories[uid] = []
-
-    user_histories[uid].append({"role": "user", "content": user_input})
-
-    await bot.send_chat_action(uid, "typing")
-    response_text = await chat_stream(user_input, uid)
-
-    # Сохраняем историю ответа
-    user_histories[uid].append({"role": "assistant", "content": response_text})
-
-    await m.answer(response_text)
-
-# --- АВТОМАТИЧЕСКИЕ ФУНКЦИИ --- 
-async def notify_admin(text: str):
     try:
-        await bot.send_message(OWNER_ID, f"⚠️ {text}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=60
+            ) as response:
+                if response.status != 200:
+                    logger.error(f"Ошибка API с ключом {current_key_index}: {response.status}")
+                    # Пробуем со следующим ключом
+                    return await call_openrouter_api(prompt, current_key_index + 1)
+                
+                response_json = await response.json()
+                content = response_json["choices"][0]["message"]["content"]
+                return process_content(content)
     except Exception as e:
-        logging.error(f"Ошибка отправки уведомления владельцу: {e}")
+        logger.error(f"Исключение с ключом {current_key_index}: {str(e)}")
+        # Пробуем со следующим ключом
+        return await call_openrouter_api(prompt, current_key_index + 1)
 
-# --- ОБРАБОТКА ВОЗМОЖНЫХ ОШИБОК ---
-@dp.errors_handler(exception=Exception)
-async def global_error_handler(update, exception):
-    logging.error(f"Ошибка при обработке запроса: {exception}")
-    await notify_admin(f"Произошла ошибка: {exception}")
-    return True  # Возвращаем True, чтобы уведомить, что ошибка была обработана
+async def check_user_limit(user_id, username):
+    """Проверка, достиг ли пользователь дневного лимита сообщений"""
+    # У администратора неограниченные сообщения
+    if username == ADMIN_USERNAME:
+        return True
+    
+    # Инициализируем данные пользователя, если они не существуют
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'messages_today': 0,
+            'username': username
+        }
+    
+    # Проверяем, превысил ли пользователь дневной лимит
+    if user_data[user_id]['messages_today'] >= FREE_MESSAGES_PER_DAY:
+        return False
+    
+    # Увеличиваем счетчик сообщений
+    user_data[user_id]['messages_today'] += 1
+    return True
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка команды /start"""
+    welcome_message = (
+        "👋 Привет! Я DeepSeek R1 бот.\n\n"
+        "Я могу ответить на твои вопросы и помочь с различными задачами.\n\n"
+        f"🔹 У обычных пользователей есть {FREE_MESSAGES_PER_DAY} бесплатных запросов в день.\n"
+        f"🔹 Администратор @{ADMIN_USERNAME} имеет неограниченный доступ.\n\n"
+        "Просто напиши свой вопрос, и я отвечу!"
+    )
+    await update.message.reply_text(welcome_message)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка команды /help"""
+    help_text = (
+        "🤖 Команды бота:\n\n"
+        "/start - Начать общение с ботом\n"
+        "/help - Показать эту справку\n"
+        "/status - Проверить статус вашего аккаунта и количество оставшихся сообщений\n\n"
+        f"У обычных пользователей есть {FREE_MESSAGES_PER_DAY} бесплатных запросов в день.\n"
+        f"Администратор @{ADMIN_USERNAME} имеет неограниченный доступ."
+    )
+    await update.message.reply_text(help_text)
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка команды /status"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    
+    if username == ADMIN_USERNAME:
+        status_text = "🔰 У вас статус администратора с неограниченным доступом."
+    else:
+        # Инициализируем данные пользователя, если они не существуют
+        if user_id not in user_data:
+            user_data[user_id] = {
+                'messages_today': 0,
+                'username': username
+            }
+        
+        messages_used = user_data[user_id]['messages_today']
+        messages_left = max(0, FREE_MESSAGES_PER_DAY - messages_used)
+        
+        status_text = (
+            f"📊 Ваш статус:\n\n"
+            f"Использовано сообщений сегодня: {messages_used}/{FREE_MESSAGES_PER_DAY}\n"
+            f"Осталось сообщений: {messages_left}\n\n"
+            "Лимит сбрасывается ежедневно в полночь."
+        )
+    
+    await update.message.reply_text(status_text)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка входящих сообщений и генерация ответов"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    
+    # Проверяем, достиг ли пользователь своего лимита
+    has_access = await check_user_limit(user_id, username)
+    if not has_access:
+        await update.message.reply_text(
+            "⚠️ Вы достигли дневного лимита бесплатных сообщений.\n"
+            "Лимит сбросится в полночь, или свяжитесь с администратором @" + ADMIN_USERNAME
+        )
+        return
+    
+    # Отправляем действие "печатает"
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    
+    # Обрабатываем сообщение
+    user_message = update.message.text
+    
+    try:
+        # Получаем ответ от DeepSeek R1
+        response = await call_openrouter_api(user_message)
+        
+        # Отправляем ответ (при необходимости разбиваем на части)
+        max_length = 4096  # Лимит размера сообщения в Telegram
+        
+        if len(response) <= max_length:
+            await update.message.reply_text(response)
+        else:
+            # Разбиваем ответ на части
+            chunks = [response[i:i+max_length] for i in range(0, len(response), max_length)]
+            for chunk in chunks:
+                await update.message.reply_text(chunk)
+                
+    except Exception as e:
+        logger.error(f"Ошибка обработки сообщения: {str(e)}")
+        await update.message.reply_text("Произошла ошибка при обработке запроса. Пожалуйста, попробуйте позже.")
+
+async def error_handler(update, context):
+    """Логирование ошибок, вызванных обновлениями"""
+    logger.error(f"Обновление {update} вызвало ошибку {context.error}")
+
+def main():
+    """Запуск бота"""
+    # Создаем приложение
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Добавляем обработчик ошибок
+    application.add_error_handler(error_handler)
+    
+    # Запускаем задачу сброса дневных лимитов
+    application.create_task(reset_daily_limits())
+    
+    # Запускаем бота
+    application.run_polling()
 
 if __name__ == "__main__":
-    from aiogram import executor
-    # Убедитесь, что бот продолжает работать без ошибок
-    executor.start_polling(dp, skip_updates=True)
+    main()
