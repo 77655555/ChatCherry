@@ -4,9 +4,9 @@ import aiohttp
 import asyncio
 import aiohttp.web
 from aiogram import Bot, Dispatcher, F
-from aiogram.enums import DefaultParseMode, ChatAction
+from aiogram.enums import ParseMode, ChatAction
 from aiogram.filters import Command
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, FSInputFile, InputFile
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, FSInputFile
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
@@ -20,18 +20,18 @@ load_dotenv()
 BOT_TOKEN       = os.getenv("BOT_TOKEN")
 IO_NET_API_KEY  = os.getenv("IO_NET_API_KEY")
 OWNER_USERNAME  = "qqq5599"
-OWNER_ID        = int(os.getenv("OWNER_ID", "9995599"))  # Добавил OWNER_ID
+OWNER_ID        = int(os.getenv("OWNER_ID", "9995599"))
 WEBHOOK_URL     = os.getenv("WEBHOOK_URL", None)
 DAILY_LIMIT     = 10
 
 MODELS = [
     "Llama-4-Maverick-17B-128E-Instruct-FP8", "QwQ-32B", "DeepSeek-R1",
-    # ... (допиши сюда остальные модели)
+    # ...
 ]
 
 # --- ЛОГИРОВАНИЕ И ИНИЦИАЛИЗАЦИЯ ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-bot = Bot(token=BOT_TOKEN, default=DefaultParseMode.MARKDOWN)
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN)
 dp  = Dispatcher()
 
 # --- ХРАНИЛИЩА ---
@@ -57,19 +57,20 @@ def get_next_model() -> str:
     return MODELS[model_index]
 
 async def ask_model(messages: List[Dict[str, Any]]) -> str:
+    global model_index
     for _ in range(len(MODELS)):
         model = MODELS[model_index]
         headers = {"Authorization": f"Bearer {IO_NET_API_KEY}"}
         payload = {"model": model, "messages": messages}
         try:
             async with aiohttp.ClientSession() as sess:
-                resp = await sess.post(
+                async with sess.post(
                     "https://io.net/api/v1/chat/completions",
-                    headers=headers, json=payload, timeout=60
-                )
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["choices"][0]["message"]["content"]
+                    headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=60)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["choices"][0]["message"]["content"]
         except Exception as e:
             logging.warning(f"Ошибка модели {model}: {e}")
         get_next_model()
@@ -87,13 +88,11 @@ def cached_query(q: str) -> str:
     return ""
 
 async def text_to_speech(text: str) -> FSInputFile:
-    """Фейковая озвучка (пишет текст в файл ogg)"""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as f:
-        f.write(b"OggS")  # Просто заглушка для теста
+        f.write(b"OggS")
         return FSInputFile(f.name)
 
 async def gen_image(prompt: str) -> str:
-    """Фейковая генерация картинки"""
     return f"https://via.placeholder.com/300x200.png?text={prompt.replace(' ', '+')}"
 
 async def notify_admin(text: str):
@@ -141,7 +140,7 @@ async def rate_response(m: Message):
             await m.answer("Спасибо за вашу оценку!")
         else:
             await m.answer("Оценка от 1 до 5.")
-    except:
+    except Exception:
         await m.answer("Используйте: Оценка [1-5]")
 
 # --- АВТОЧИСТКА ---
@@ -220,7 +219,7 @@ async def main():
     await runner.setup()
     await aiohttp.web.TCPSite(runner, "0.0.0.0", 8080).start()
 
-    await dp.start_polling(bot, skip_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
