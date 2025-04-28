@@ -22,7 +22,7 @@ from googletrans import LANGUAGES
 # --- ЗАГРУЗКА КОНФИГУРАЦИИ ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEYS = os.getenv("OPENROUTER_API_KEYS").split(',')  # Обработка нескольких ключей
 OWNER_USERNAME = "qqq5599"
 OWNER_ID = int(os.getenv("OWNER_ID", "9995599"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", None)
@@ -58,12 +58,18 @@ def get_next_model() -> str:
     model_index = (model_index + 1) % len(MODELS)
     return MODELS[model_index]
 
+# Выбираем ключ для API
+def get_next_api_key() -> str:
+    global OPENROUTER_API_KEYS
+    key_index = random.randint(0, len(OPENROUTER_API_KEYS) - 1)  # Выбор случайного ключа
+    return OPENROUTER_API_KEYS[key_index]
+
 async def ask_model(messages: List[Dict[str, Any]]) -> str:
     global model_index
     for _ in range(len(MODELS)):
         model = MODELS[model_index]
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {get_next_api_key()}",  # Используем случайный ключ
             "HTTP-Referer": "https://yourdomain.com/",
             "X-Title": "YourBotTitle"
         }
