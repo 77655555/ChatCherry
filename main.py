@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 # Конфигурационные параметры
 TELEGRAM_TOKEN = "8035488978:AAFMLVN3Ya_E4GYeWrxnKUkrAlGMirSP8gw"
 API_KEYS = [
-    "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",
-    "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",
-    "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",
-    "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",
-    "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"
+    "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",
+    "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",
+    "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",
+    "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",
+    "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"
 ]
 MODEL = "deepseek/deepseek-r1"
 ADMIN_USERNAME = "qqq5599"
