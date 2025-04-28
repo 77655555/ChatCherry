@@ -20,7 +20,7 @@ from googletrans import LANGUAGES
 # --- ЗАГРУЗКА КОНФИГУРАЦИИ ---
 load_dotenv()
 BOT_TOKEN       = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")  # Обновляем переменную для OpenAI
+OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
 OWNER_USERNAME  = "qqq5599"
 OWNER_ID        = int(os.getenv("OWNER_ID", "9995599"))
 WEBHOOK_URL     = os.getenv("WEBHOOK_URL", None)
@@ -28,7 +28,6 @@ DAILY_LIMIT     = 10
 
 MODELS = [
     "gpt-4", "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
-    # ...
 ]
 
 # --- ЛОГИРОВАНИЕ И ИНИЦИАЛИЗАЦИЯ ---
@@ -66,13 +65,13 @@ async def ask_model(messages: List[Dict[str, Any]]) -> str:
         payload = {
             "model": model,
             "messages": messages,
-            "temperature": 0.7,  # Можете настроить температуру, если нужно
-            "max_tokens": 150,   # Максимальное количество токенов
+            "temperature": 0.7,
+            "max_tokens": 150,
         }
         try:
             async with aiohttp.ClientSession() as sess:
                 async with sess.post(
-                    "https://api.openai.com/v1/chat/completions",  # Используем правильный endpoint OpenAI
+                    "https://api.openai.com/v1/chat/completions",
                     headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=60)
                 ) as resp:
                     if resp.status == 200:
