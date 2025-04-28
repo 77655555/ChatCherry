@@ -39,20 +39,30 @@ def process_content(content: str) -> str:
     """Очистка контента от служебных тегов"""
     return content.replace('<think>', '').replace('</think>', '').strip()
 
-async def reset_daily_limits():
+async def reset_daily_limits(context: ContextTypes.DEFAULT_TYPE):
     """Ежедневный сброс лимитов"""
-    while True:
-        now = datetime.now()
-        midnight = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        await asyncio.sleep((midnight - now).total_seconds())
-        
+    try:
         async with data_lock:
+            current_time = datetime.now()
+            midnight = (current_time + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            wait_seconds = (midnight - current_time).total_seconds()
+            
+            logger.info(f"Запланирован сброс лимитов через {wait_seconds} секунд")
+            await asyncio.sleep(wait_seconds)
+            
             for user_id in list(user_data.keys()):
                 if user_data[user_id].get('username') != ADMIN_USERNAME:
                     user_data[user_id]['messages_today'] = 0
-        logger.info("Дневные лимиты сообщений сброшены")
+            
+            logger.info("Дневные лимиты сообщений сброшены")
+            
+            # Планируем следующий сброс
+            context.job_queue.run_once(reset_daily_limits, when=0)
+            
+    except Exception as e:
+        logger.error(f"Ошибка в reset_daily_limits: {str(e)}")
 
 async def call_openrouter_api(prompt: str) -> str:
     """Улучшенный вызов API с ротацией ключей"""
@@ -136,11 +146,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             user_info = user_data.get(user.id, {'messages_today': 0})
             remaining = max(0, FREE_MESSAGES_PER_DAY - user_info['messages_today'])
+            current_time = datetime.now()
+            reset_time = current_time.replace(hour=23, minute=59, second=59)
+            hours_left = (reset_time - current_time).seconds // 3600
+            
             status_text = (
                 f"📊 Использовано сообщений: {user_info['messages_today']}/{FREE_MESSAGES_PER_DAY}\n"
                 f"🔄 Осталось: {remaining}\n"
-                "⏳ Сброс лимита через: "
-                f"{(datetime.now().replace(hour=23, minute=59, second=59) - datetime.now()).seconds // 3600} ч."
+                f"⏳ Сброс лимита через: {hours_left} ч."
             )
     
     await update.message.reply_text(status_text)
@@ -153,24 +166,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Проверка лимита
         if not await check_user_limit(user.id, user.username):
+            current_hour = datetime.now().hour
             await update.message.reply_text(
-                f"⚠️ Лимит исчерпан! Сброс через {24 - datetime.now().hour} ч.\n"
+                f"⚠️ Лимит исчерпан! Сброс через {24 - current_hour} ч.\n"
                 f"Контакт: @{ADMIN_USERNAME}"
             )
             return
 
-        # Индикатор набора сообщения
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id, 
             action='typing'
         )
 
-        # Обработка запроса
         response = await call_openrouter_api(update.message.text)
         
-        # Отправка ответа с учетом ограничений Telegram
         for i in range(0, len(response), MAX_MESSAGE_LENGTH):
             await update.message.reply_text(response[i:i+MAX_MESSAGE_LENGTH])
             
@@ -203,7 +213,10 @@ def main():
         application.add_handler(handler)
     
     application.add_error_handler(error_handler)
-    application.create_task(reset_daily_limits())
+    
+    # Планирование периодических задач
+    application.job_queue.run_once(reset_daily_limits, when=0)
+    
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
