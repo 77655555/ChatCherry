@@ -43,8 +43,8 @@ async def reset_daily_limits(context: ContextTypes.DEFAULT_TYPE):
     """Ежедневный сброс лимитов"""
     try:
         async with data_lock:
-            current_time = datetime.now()
             logger.info("Начало сброса дневных лимитов...")
+            current_time = datetime.now()
             
             for user_id in list(user_data.keys()):
                 if user_data[user_id].get('username') != ADMIN_USERNAME:
@@ -190,7 +190,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Инициализация и запуск бота"""
-    application = Application.builder().token(TELEGRAM_TOKEN).arbitrary_callback_data(True).build()
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Регистрация обработчиков
     handlers = [
