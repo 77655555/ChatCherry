@@ -23,7 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурационные параметры
+# Конфигурация
 TELEGRAM_TOKEN = "8035488978:AAFMLVN3Ya_E4GYeWrxnKUkrAlGMirSP8gw"
 API_KEYS = [
     "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",
@@ -34,92 +34,77 @@ API_KEYS = [
 ]
 MODEL = "deepseek/deepseek-r1"
 ADMIN_USERNAME = "qqq5599"
-FREE_MESSAGES_PER_DAY = 10
-MAX_MESSAGE_LENGTH = 4096
+FREE_MESSAGES = 10
+MAX_LENGTH = 4096
 REQUEST_TIMEOUT = 60
 CACHE_EXPIRATION = timedelta(hours=1)
 
-# Глобальные структуры данных
+# Глобальные данные
 user_data = {}
 response_cache = {}
 data_lock = asyncio.Lock()
 key_usage = {key: {"count": 0, "errors": 0} for key in API_KEYS}
 
-class APIError(Exception):
-    pass
+class APIError(Exception): pass
+class RateLimitExceeded(Exception): pass
 
-class RateLimitExceeded(Exception):
-    pass
-
+# Функции обработки
 def process_content(content: str) -> str:
     return content.replace("<think>", "").replace("</think>", "").strip()
 
-async def reset_daily_limits(context: ContextTypes.DEFAULT_TYPE):
+async def reset_limits(context: ContextTypes.DEFAULT_TYPE):
     async with data_lock:
-        logger.info("Resetting daily limits...")
         for user_id in list(user_data.keys()):
             if user_data[user_id].get("username") != ADMIN_USERNAME:
                 user_data[user_id]["messages_today"] = 0
-        logger.info("Daily limits reset complete")
+        logger.info("Daily limits reset")
 
-async def rotate_api_key() -> str:
+async def rotate_key() -> str:
     async with data_lock:
         return min(API_KEYS, key=lambda k: key_usage[k]["count"])
 
-async def call_openrouter_api(prompt: str) -> str:
+async def call_api(prompt: str) -> str:
     cache_key = quote(prompt.lower())
     async with data_lock:
-        if cache_key in response_cache:
-            if datetime.now() - response_cache[cache_key]["timestamp"] < CACHE_EXPIRATION:
-                return response_cache[cache_key]["response"]
+        cached = response_cache.get(cache_key)
+        if cached and datetime.now() - cached["timestamp"] < CACHE_EXPIRATION:
+            return cached["response"]
 
     for attempt in range(3):
-        api_key = await rotate_api_key()
+        api_key = await rotate_key()
         try:
             async with aiohttp.ClientSession() as session:
-                start_time = datetime.now()
                 async with session.post(
                     "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "HTTP-Referer": "https://github.com/your-repository",
-                        "X-Title": "Telegram Bot",
-                    },
-                    json={
-                        "model": MODEL,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.7,
-                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={"model": MODEL, "messages": [{"role": "user", "content": prompt}]},
                     timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
                 ) as response:
-                    response_text = await response.text()
-                    result = json.loads(response_text)
-
+                    result = await response.json()
+                    
                     async with data_lock:
                         key_usage[api_key]["count"] += 1
 
                     if response.status == 429:
                         raise RateLimitExceeded()
                     if response.status != 200:
-                        logger.error(f"API Error {response.status}: {result.get('error', {})}")
                         continue
 
                     content = process_content(result["choices"][0]["message"]["content"])
                     async with data_lock:
                         response_cache[cache_key] = {
                             "response": content,
-                            "timestamp": datetime.now(),
+                            "timestamp": datetime.now()
                         }
                     return content
-        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:
+        except Exception as e:
             async with data_lock:
                 key_usage[api_key]["errors"] += 1
-            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
             await asyncio.sleep(2 ** attempt)
-
+    
     raise APIError("All API attempts failed")
 
-async def check_user_limit(user_id: int, username: str) -> bool:
+async def check_limit(user_id: int, username: str) -> bool:
     async with data_lock:
         if username == ADMIN_USERNAME:
             return True
@@ -128,118 +113,79 @@ async def check_user_limit(user_id: int, username: str) -> bool:
             user_data[user_id] = {
                 "messages_today": 0,
                 "username": username,
-                "first_seen": datetime.now(),
+                "first_seen": datetime.now()
             }
 
-        if user_data[user_id]["messages_today"] >= FREE_MESSAGES_PER_DAY:
+        if user_data[user_id]["messages_today"] >= FREE_MESSAGES:
             return False
 
         user_data[user_id]["messages_today"] += 1
         return True
 
+# Обработчики команд
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    welcome_message = (
+    await update.message.reply_text(
         f"👋 Привет, {user.first_name}!\n\n"
-        "Я интеллектуальный ассистент на базе DeepSeek R1.\n\n"
-        f"🔹 Бесплатно: {FREE_MESSAGES_PER_DAY} запросов/день\n"
-        f"🔹 Поддержка: @{ADMIN_USERNAME}\n\n"
-        "Просто задай свой вопрос!"
+        f"🔹 Бесплатно: {FREE_MESSAGES} запросов/день\n"
+        f"🔹 Поддержка: @{ADMIN_USERNAME}"
     )
-    await update.message.reply_text(welcome_message)
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "📚 Доступные команды:\n\n"
-        "/start - Начало работы\n"
-        "/help - Эта справка\n"
-        "/status - Ваша статистика\n"
-        "/feedback - Оставить отзыв\n\n"
-        f"Администратор: @{ADMIN_USERNAME}"
-    )
-    await update.message.reply_text(help_text)
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     async with data_lock:
         if user.username == ADMIN_USERNAME:
-            total_users = len(user_data)
-            active_users = sum(1 for u in user_data.values() if u["messages_today"] > 0)
-            status_text = (
-                "⚙️ Админ-статистика:\n"
-                f"👤 Пользователей: {total_users}\n"
-                f"🔢 Активных: {active_users}\n"
-                f"🔑 Использовано ключей: {sum(v['count'] for v in key_usage.values())}"
+            stats = (
+                f"👤 Пользователей: {len(user_data)}\n"
+                f"🔑 Запросов: {sum(v['count'] for v in key_usage.values())}"
             )
         else:
-            user_info = user_data.get(user.id, {"messages_today": 0})
-            remaining = max(0, FREE_MESSAGES_PER_DAY - user_info["messages_today"])
+            info = user_data.get(user.id, {"messages_today": 0})
             reset_time = datetime.now().replace(hour=0, minute=0, second=0) + timedelta(days=1)
             time_left = reset_time - datetime.now()
-
-            status_text = (
-                "📊 Ваша статистика:\n"
-                f"✉️ Использовано: {user_info['messages_today']}/{FREE_MESSAGES_PER_DAY}\n"
-                f"🔄 Осталось: {remaining}\n"
-                f"⏳ Сброс через: {time_left.seconds // 3600} ч. {(time_left.seconds % 3600) // 60} мин."
+            stats = (
+                f"✉️ Использовано: {info['messages_today']}/{FREE_MESSAGES}\n"
+                f"⏳ Сброс через: {time_left.seconds//3600} ч. {(time_left.seconds%3600)//60} мин."
             )
     
-    await update.message.reply_text(status_text)
+    await update.message.reply_text(stats)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     try:
-        if not await check_user_limit(user.id, user.username):
-            await update.message.reply_text(
-                "⚠️ Дневной лимит исчерпан!\n"
-                f"Сброс через {24 - datetime.now().hour} часов\n"
-                f"Контакт: @{ADMIN_USERNAME}"
-            )
+        if not await check_limit(user.id, user.username):
+            await update.message.reply_text("⚠️ Лимит исчерпан!")
             return
 
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action="typing"
-        )
-
-        response = await call_openrouter_api(update.message.text)
+        await context.bot.send_chat_action(update.effective_chat.id, "typing")
+        response = await call_api(update.message.text)
         
-        # Отправка ответа частями с индикатором прогресса
-        message_parts = [response[i:i+MAX_MESSAGE_LENGTH] for i in range(0, len(response), MAX_MESSAGE_LENGTH)]
-        for i, part in enumerate(message_parts):
-            await update.message.reply_text(
-                f"📝 Ответ ({i+1}/{len(message_parts)}):\n\n{part}"
-            )
+        for i in range(0, len(response), MAX_LENGTH):
+            await update.message.reply_text(response[i:i+MAX_LENGTH])
 
     except RateLimitExceeded:
-        await update.message.reply_text("🚧 Превышена скорость запросов. Попробуйте через минуту.")
-    except APIError as e:
-        logger.error(f"API Error: {str(e)}")
-        await update.message.reply_text("🔧 Временные технические неполадки. Попробуйте позже.")
+        await update.message.reply_text("🚧 Слишком много запросов")
+    except APIError:
+        await update.message.reply_text("🔧 Технические неполадки")
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-        await update.message.reply_text("⚠️ Произошла непредвиденная ошибка.")
+        logger.error(f"Error: {str(e)}", exc_info=True)
+        await update.message.reply_text("⚠️ Ошибка обработки")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    error = context.error
-    logger.error(f"Error: {str(error)}", exc_info=True)
-    
+    logger.error(f"Error: {context.error}", exc_info=True)
     if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "⚠️ Произошла ошибка при обработке запроса. Разработчик уже уведомлен."
-        )
+        await update.effective_message.reply_text("⚠️ Произошла ошибка")
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([
-        BotCommand("start", "Запустить бота"),
-        BotCommand("help", "Помощь"),
+        BotCommand("start", "Начало работы"),
         BotCommand("status", "Статистика"),
     ])
 
+# Основная конфигурация
 def setup_handlers(application: Application):
     handlers = [
         CommandHandler("start", start),
-        CommandHandler("help", help_command),
         CommandHandler("status", status),
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
     ]
@@ -247,38 +193,23 @@ def setup_handlers(application: Application):
         application.add_handler(handler)
 
 def main():
-    application = (
-        ApplicationBuilder()
-        .token(TELEGRAM_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
-
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    
     setup_handlers(application)
     application.add_error_handler(error_handler)
+    application.job_queue.run_daily(reset_limits, time=datetime.strptime("00:00", "%H:%M").time())
 
-    # Планировщик задач
-    job_queue = application.job_queue
-    job_queue.run_daily(reset_daily_limits, time=datetime.strptime("00:00", "%H:%M").time())
-
-    # Конфигурация для Render
     if 'RENDER' in os.environ:
-        PORT = int(os.environ.get('PORT', 10000))
-        WEBHOOK_URL = f"https://{os.environ['RENDER_SERVICE_NAME']}.onrender.com/{TELEGRAM_TOKEN}"
-        
         application.run_webhook(
             listen="0.0.0.0",
-            port=PORT,
-            webhook_url=WEBHOOK_URL,
+            port=int(os.environ.get('PORT', 10000)),
+            webhook_url=f"https://{os.environ['RENDER_SERVICE_NAME']}.onrender.com/{TELEGRAM_TOKEN}",
             url_path=TELEGRAM_TOKEN,
-            secret_token=os.environ.get('SECRET_TOKEN', 'DEFAULT_SECRET'),
+            secret_token=os.environ.get('SECRET_TOKEN', 'DEFAULT'),
+            drop_pending_updates=True
         )
     else:
-        application.run_polling(
-            drop_pending_updates=True,
-            close_loop=False,
-            allowed_updates=Update.ALL_TYPES,
-        )
+        application.run_polling()
 
 if __name__ == "__main__":
     main()
