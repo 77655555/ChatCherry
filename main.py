@@ -246,7 +246,7 @@ async def handle_text(m: Message):
 
 @dp.message(F.voice)
 async def handle_voice(m: Message):
-    await m.answer("Голосовые пока не поддерживаются. Пожалуйста, отправьте текст.")
+    await m.answer("Голосовое сообщение принято")
 
 @dp.message(F.document)
 async def handle_doc(m: Message):
