@@ -191,9 +191,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
-    logger.error(f"Ошибка в обновлении {update}: {context.error}")
-    if update.effective_message:
-        await update.effective_message.reply_text("⚠️ Произошла внутренняя ошибка. Повторите попытку.")
+    try:
+        if update and update.effective_message:
+            logger.error(f"Ошибка в обновлении {update.update_id}: {context.error}")
+            await update.effective_message.reply_text("⚠️ Произошла внутренняя ошибка. Повторите попытку.")
+        else:
+            logger.error(f"Ошибка без обновления: {context.error}")
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике ошибок: {str(e)}")
 
 def main():
     """Инициализация и запуск бота"""
