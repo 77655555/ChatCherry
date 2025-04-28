@@ -14,6 +14,8 @@ from typing import List, Dict, Any
 from functools import lru_cache
 import random
 import tempfile
+import googletrans
+from googletrans import LANGUAGES
 
 # --- ЗАГРУЗКА КОНФИГУРАЦИИ ---
 load_dotenv()
@@ -143,6 +145,16 @@ async def rate_response(m: Message):
     except Exception:
         await m.answer("Используйте: Оценка [1-5]")
 
+# --- ПЕРЕВОД ТЕКСТА ---
+async def translate_text(text: str, dest_lang: str) -> str:
+    try:
+        translator = googletrans.Translator()
+        translated = translator.translate(text, dest=dest_lang)
+        return translated.text
+    except Exception as e:
+        logging.error(f"Ошибка перевода: {e}")
+        return "⚠️ Не удалось выполнить перевод."
+
 # --- АВТОЧИСТКА ---
 async def daily_reset():
     while True:
@@ -199,6 +211,10 @@ async def handle_text(m: Message):
     response_text = cached_query(m.text)
     if not response_text:
         response_text = await ask_model(list(user_histories[uid]))
+
+    # Перевод текста перед отправкой (если нужно)
+    if user_langs[uid] != 'ru':
+        response_text = await translate_text(response_text, user_langs[uid])
 
     user_histories[uid].append({"role": "assistant", "content": response_text})
 
