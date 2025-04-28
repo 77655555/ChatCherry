@@ -40,8 +40,8 @@ menu_kb = ReplyKeyboardMarkup(keyboard=[
 ], resize_keyboard=True)
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
 def process_content(content):
+    # Удаляем теги <think> и </think>
     return content.replace('<think>', '').replace('</think>', '')
 
 async def chat_stream(prompt: str, user_id: int) -> str:
@@ -85,7 +85,7 @@ async def cmd_start(m: Message):
 
 @dp.message(Command("help"))
 async def cmd_help(m: Message):
-    await m.answer("/start /help")
+    await m.answer("/start /help - Для получения помощи")
 
 # --- ОБРАБОТКА ТЕКСТА ---
 @dp.message(F.text & ~F.command)
@@ -94,11 +94,15 @@ async def handle_text(m: Message):
     user_input = m.text
 
     if user_input.lower() == 'exit':
+        # Завершаем работу, очищаем историю
+        if uid in user_histories:
+            del user_histories[uid]
         return await m.answer("Завершение работы...")
 
-    # Вставляем историю для пользователя
+    # Вставляем историю для пользователя, если её нет
     if uid not in user_histories:
         user_histories[uid] = []
+
     user_histories[uid].append({"role": "user", "content": user_input})
 
     await bot.send_chat_action(uid, "typing")
@@ -118,4 +122,5 @@ async def notify_admin(text: str):
 
 if __name__ == "__main__":
     from aiogram import executor
+    # Убедитесь, что бот продолжает работать без ошибок
     executor.start_polling(dp, skip_updates=True)
