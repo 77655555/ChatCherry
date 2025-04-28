@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import asyncio
+import fcntl
+import sys
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -17,11 +19,11 @@ logger = logging.getLogger(__name__)
 # Конфигурационные параметры
 TELEGRAM_TOKEN = "8035488978:AAFMLVN3Ya_E4GYeWrxnKUkrAlGMirSP8gw"
 API_KEYS = [
-    "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",
-    "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",
-    "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",
-    "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",
-    "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"
+    "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",
+    "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",
+    "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",
+    "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",
+    "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"
 ]
 MODEL = "deepseek/deepseek-r1"
 ADMIN_USERNAME = "qqq5599"
@@ -34,6 +36,16 @@ data_lock = asyncio.Lock()
 
 class APIError(Exception):
     pass
+
+def singleton_lock():
+    """Гарантия единственного запущенного экземпляра"""
+    try:
+        lock_file = open('.bot.lock', 'w')
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_file
+    except (IOError, BlockingIOError):
+        logger.critical("Another instance is already running. Exiting.")
+        sys.exit(1)
 
 def process_content(content: str) -> str:
     """Очистка контента от служебных тегов"""
@@ -191,40 +203,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
-    try:
-        if update and update.effective_message:
-            logger.error(f"Ошибка в обновлении {update.update_id}: {context.error}")
-            await update.effective_message.reply_text("⚠️ Произошла внутренняя ошибка. Повторите попытку.")
-        else:
-            logger.error(f"Ошибка без обновления: {context.error}")
-    except Exception as e:
-        logger.error(f"Ошибка в обработчике ошибок: {str(e)}")
+    error = context.error
+    if isinstance(error, Exception):
+        if 'Conflict' in str(error):
+            logger.critical("Обнаружен конфликт версий! Завершение работы...")
+            sys.exit(1)
+    
+    logger.error(f"Ошибка: {str(error)}", exc_info=True)
+    if update and update.effective_message:
+        await update.effective_message.reply_text("⚠️ Внутренняя ошибка. Попробуйте позже.")
 
 def main():
     """Инициализация и запуск бота"""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    # Гарантия единственного экземпляра
+    lock_file = singleton_lock()
     
-    # Регистрация обработчиков
-    handlers = [
-        CommandHandler("start", start),
-        CommandHandler("help", help_command),
-        CommandHandler("status", status),
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-    ]
-    
-    for handler in handlers:
-        application.add_handler(handler)
-    
-    application.add_error_handler(error_handler)
-    
-    # Планирование ежедневного сброса в 00:00
-    application.job_queue.run_daily(
-        reset_daily_limits,
-        time=datetime.strptime("00:00", "%H:%M").time(),
-        days=(0, 1, 2, 3, 4, 5, 6)
-    )
-    
-    application.run_polling(drop_pending_updates=True)
+    try:
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # Регистрация обработчиков
+        handlers = [
+            CommandHandler("start", start),
+            CommandHandler("help", help_command),
+            CommandHandler("status", status),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+        ]
+        
+        for handler in handlers:
+            application.add_handler(handler)
+        
+        application.add_error_handler(error_handler)
+        
+        # Планирование ежедневного сброса в 00:00
+        application.job_queue.run_daily(
+            reset_daily_limits,
+            time=datetime.strptime("00:00", "%H:%M").time(),
+            days=(0, 1, 2, 3, 4, 5, 6)
+        )
+        
+        # Для Render
+        if 'RENDER' in os.environ:
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=int(os.environ.get('PORT', 10000)),
+                secret_token='WEBHOOK_SECRET',
+                webhook_url=os.environ.get('WEBHOOK_URL')
+            )
+        else:
+            application.run_polling(
+                drop_pending_updates=True,
+                close_loop=False,
+                stop_signals=[]
+            )
+            
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
 
 if __name__ == "__main__":
     main()
