@@ -17,7 +17,7 @@ TELEGRAM_TOKEN = "8035488978:AAFMLVN3Ya_E4GYeWrxnKUkrAlGMirSP8gw"
 
 # API ключи OpenRouter - будут использоваться последовательно, если один не работает
 API_KEYS = [
-    "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",
+    "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",
     "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",
     "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",
     "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",
