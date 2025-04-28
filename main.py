@@ -2,7 +2,6 @@ import os
 import json
 import logging
 import asyncio
-import fcntl
 import sys
 from datetime import datetime, timedelta
 from telegram import Update
@@ -36,16 +35,6 @@ data_lock = asyncio.Lock()
 
 class APIError(Exception):
     pass
-
-def singleton_lock():
-    """Гарантия единственного запущенного экземпляра"""
-    try:
-        lock_file = open('.bot.lock', 'w')
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return lock_file
-    except (IOError, BlockingIOError):
-        logger.critical("Another instance is already running. Exiting.")
-        sys.exit(1)
 
 def process_content(content: str) -> str:
     """Очистка контента от служебных тегов"""
@@ -204,61 +193,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
     error = context.error
-    if isinstance(error, Exception):
-        if 'Conflict' in str(error):
-            logger.critical("Обнаружен конфликт версий! Завершение работы...")
-            sys.exit(1)
-    
     logger.error(f"Ошибка: {str(error)}", exc_info=True)
     if update and update.effective_message:
         await update.effective_message.reply_text("⚠️ Внутренняя ошибка. Попробуйте позже.")
 
 def main():
     """Инициализация и запуск бота"""
-    # Гарантия единственного экземпляра
-    lock_file = singleton_lock()
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    try:
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
+    # Регистрация обработчиков
+    handlers = [
+        CommandHandler("start", start),
+        CommandHandler("help", help_command),
+        CommandHandler("status", status),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    ]
+    
+    for handler in handlers:
+        application.add_handler(handler)
+    
+    application.add_error_handler(error_handler)
+    
+    # Планирование ежедневного сброса в 00:00
+    application.job_queue.run_daily(
+        reset_daily_limits,
+        time=datetime.strptime("00:00", "%H:%M").time(),
+        days=(0, 1, 2, 3, 4, 5, 6)
+    )
+    
+    # Настройка для Render
+    if 'RENDER' in os.environ:
+        PORT = int(os.environ.get('PORT', 10000))
+        WEBHOOK_URL = f"https://{os.environ['RENDER_SERVICE_NAME']}.onrender.com/{TELEGRAM_TOKEN}"
         
-        # Регистрация обработчиков
-        handlers = [
-            CommandHandler("start", start),
-            CommandHandler("help", help_command),
-            CommandHandler("status", status),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-        ]
-        
-        for handler in handlers:
-            application.add_handler(handler)
-        
-        application.add_error_handler(error_handler)
-        
-        # Планирование ежедневного сброса в 00:00
-        application.job_queue.run_daily(
-            reset_daily_limits,
-            time=datetime.strptime("00:00", "%H:%M").time(),
-            days=(0, 1, 2, 3, 4, 5, 6)
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=WEBHOOK_URL,
+            secret_token=os.environ.get('SECRET_TOKEN', 'DEFAULT_SECRET')
         )
-        
-        # Для Render
-        if 'RENDER' in os.environ:
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=int(os.environ.get('PORT', 10000)),
-                secret_token='WEBHOOK_SECRET',
-                webhook_url=os.environ.get('WEBHOOK_URL')
-            )
-        else:
-            application.run_polling(
-                drop_pending_updates=True,
-                close_loop=False,
-                stop_signals=[]
-            )
-            
-    finally:
-        fcntl.flock(lock_file, fcntl.LOCK_UN)
-        lock_file.close()
+    else:
+        application.run_polling(
+            drop_pending_updates=True,
+            close_loop=False,
+            stop_signals=[]
+        )
 
 if __name__ == "__main__":
     main()
