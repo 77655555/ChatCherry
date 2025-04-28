@@ -22,13 +22,13 @@ from googletrans import LANGUAGES
 # --- ЗАГРУЗКА КОНФИГУРАЦИИ ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OWNER_USERNAME = "qqq5599"
 OWNER_ID = int(os.getenv("OWNER_ID", "9995599"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", None)
 DAILY_LIMIT = 15
 
-MODELS = ["gpt-4", "gpt-3.5-turbo", "gpt-3.5-turbo-16k"]
+MODELS = ["openrouter/gpt-4", "openrouter/gpt-3.5-turbo", "openrouter/gpt-3.5-turbo-16k"]
 
 # --- ЛОГИРОВАНИЕ ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -62,7 +62,11 @@ async def ask_model(messages: List[Dict[str, Any]]) -> str:
     global model_index
     for _ in range(len(MODELS)):
         model = MODELS[model_index]
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://yourdomain.com/",
+            "X-Title": "YourBotTitle"
+        }
         payload = {
             "model": model,
             "messages": messages,
@@ -72,7 +76,7 @@ async def ask_model(messages: List[Dict[str, Any]]) -> str:
         try:
             async with aiohttp.ClientSession() as sess:
                 async with sess.post(
-                    "https://api.openai.com/v1/chat/completions",
+                    "https://openrouter.ai/api/v1/chat/completions",
                     headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=60)
                 ) as resp:
                     if resp.status == 200:
