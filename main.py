@@ -20,14 +20,14 @@ from googletrans import LANGUAGES
 # --- ЗАГРУЗКА КОНФИГУРАЦИИ ---
 load_dotenv()
 BOT_TOKEN       = os.getenv("BOT_TOKEN")
-IO_NET_API_KEY  = os.getenv("IO_NET_API_KEY")
+OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")  # Обновляем переменную для OpenAI
 OWNER_USERNAME  = "qqq5599"
 OWNER_ID        = int(os.getenv("OWNER_ID", "9995599"))
 WEBHOOK_URL     = os.getenv("WEBHOOK_URL", None)
 DAILY_LIMIT     = 10
 
 MODELS = [
-    "Llama-4-Maverick-17B-128E-Instruct-FP8", "QwQ-32B", "DeepSeek-R1",
+    "gpt-4", "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
     # ...
 ]
 
@@ -62,12 +62,17 @@ async def ask_model(messages: List[Dict[str, Any]]) -> str:
     global model_index
     for _ in range(len(MODELS)):
         model = MODELS[model_index]
-        headers = {"Authorization": f"Bearer {IO_NET_API_KEY}"}
-        payload = {"model": model, "messages": messages}
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.7,  # Можете настроить температуру, если нужно
+            "max_tokens": 150,   # Максимальное количество токенов
+        }
         try:
             async with aiohttp.ClientSession() as sess:
                 async with sess.post(
-                    "https://io.net/api/v1/chat/completions",
+                    "https://api.openai.com/v1/chat/completions",  # Используем правильный endpoint OpenAI
                     headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=60)
                 ) as resp:
                     if resp.status == 200:
