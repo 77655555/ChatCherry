@@ -44,7 +44,6 @@ async def reset_daily_limits(context: ContextTypes.DEFAULT_TYPE):
     try:
         async with data_lock:
             logger.info("Начало сброса дневных лимитов...")
-            current_time = datetime.now()
             
             for user_id in list(user_data.keys()):
                 if user_data[user_id].get('username') != ADMIN_USERNAME:
@@ -62,7 +61,11 @@ async def call_openrouter_api(prompt: str) -> str:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     "https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "HTTP-Referer": "https://github.com/your-repository",
+                        "X-Title": "Telegram Bot"
+                    },
                     json={
                         "model": MODEL,
                         "messages": [{"role": "user", "content": prompt}],
@@ -70,6 +73,10 @@ async def call_openrouter_api(prompt: str) -> str:
                     },
                     timeout=60
                 ) as response:
+                    if response.status == 401:
+                        logger.error(f"Неверный API ключ: {api_key[:8]}...")
+                        continue
+                    
                     if response.status != 200:
                         error = await response.json()
                         logger.error(f"Ошибка API {response.status}: {error.get('error', {})}")
@@ -85,7 +92,7 @@ async def call_openrouter_api(prompt: str) -> str:
             logger.error("Неверный формат ответа API")
             continue
     
-    raise APIError("Все API ключи исчерпаны")
+    raise APIError("Все API ключи недействительны или сервис недоступен")
 
 async def check_user_limit(user_id: int, username: str) -> bool:
     """Потокобезопасная проверка лимитов"""
