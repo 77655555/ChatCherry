@@ -21,7 +21,7 @@ OWNER_USERNAME = "qqq5599"
 OWNER_ID = int(os.getenv("OWNER_ID", "9995599"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", None)
 
-API_KEY = "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"  # Вставьте сюда ваш ключ из https://openrouter.ai/settings/keys
+API_KEY = os.getenv("API_KEY", "")  # Вставьте сюда ваш ключ из https://openrouter.ai/settings/keys
 MODEL = "deepseek/deepseek-r1"
 
 # --- ЛОГИРОВАНИЕ ---
@@ -119,6 +119,13 @@ async def notify_admin(text: str):
         await bot.send_message(OWNER_ID, f"⚠️ {text}")
     except Exception as e:
         logging.error(f"Ошибка отправки уведомления владельцу: {e}")
+
+# --- ОБРАБОТКА ВОЗМОЖНЫХ ОШИБОК ---
+@dp.errors_handler(exception=Exception)
+async def global_error_handler(update, exception):
+    logging.error(f"Ошибка при обработке запроса: {exception}")
+    await notify_admin(f"Произошла ошибка: {exception}")
+    return True  # Возвращаем True, чтобы уведомить, что ошибка была обработана
 
 if __name__ == "__main__":
     from aiogram import executor
