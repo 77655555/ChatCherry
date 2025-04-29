@@ -1,2 +1,4 @@
+# requirements.txt
+python-telegram-bot[webhooks]==22.0
 aiohttp>=3.8.1
 tzlocal>=4.0
