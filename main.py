@@ -181,7 +181,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_chat_action(update.effective_chat.id, "typing")
         response = await call_api(update.message.text)
         
-        # Разделение длинных сообщений с нумерацией
         chunks = [response[i:i+MAX_LENGTH] for i in range(0, len(response), MAX_LENGTH)]
         for idx, chunk in enumerate(chunks, 1):
             await update.message.reply_text(f"📝 Ответ ({idx}/{len(chunks)}):\n\n{chunk}")
@@ -211,24 +210,22 @@ def main():
     application = ApplicationBuilder() \
         .token(TELEGRAM_TOKEN) \
         .post_init(post_init) \
+        .job_queue(None) \
         .http_version("1.1") \
         .get_updates_http_version("1.1") \
         .build()
 
-    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
 
-    # Планировщик задач
     application.job_queue.run_daily(
         reset_limits,
         time=datetime.strptime("00:00", "%H:%M").time(),
         name="daily_reset"
     )
 
-    # Конфигурация для Render
     if 'RENDER' in os.environ:
         application.run_webhook(
             listen="0.0.0.0",
@@ -237,9 +234,7 @@ def main():
             url_path=TELEGRAM_TOKEN,
             secret_token=os.environ.get('SECRET_TOKEN', 'DEFAULT_SECRET_TOKEN'),
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES,
-            cert=None,
-            key=None
+            allowed_updates=Update.ALL_TYPES
         )
     else:
         application.run_polling(
