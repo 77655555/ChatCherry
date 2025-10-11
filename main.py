@@ -1,2422 +1,997 @@
-import asyncio
-import logging
+#!/usr/bin/env python3
+"""
+Gravity Hopper - Mobile 2D Game
+Увлекательная мобильная 2D игра с простым управлением, оптимизированная для сенсорного экрана.
+"""
+
+import pygame
+import random
+import math
 import json
 import os
-import re
-import time
-import requests
-from datetime import datetime, date
-from typing import Dict, List, Optional, Union, Any
-from concurrent.futures import ThreadPoolExecutor
-
-
-
-
-from aiogram import Bot, Dispatcher, Router, F, html
-from aiogram.filters import Command, CommandStart, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.enums import ChatAction, ParseMode
-from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, FSInputFile,
-    InputMediaPhoto, PhotoSize
-)
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.utils.chat_action import ChatActionMiddleware
-from aiogram.exceptions import TelegramAPIError
-
-
-
-
-# Конфигурация и константы
-CONFIG = {
-    "API_URL": "https://api.intelligence.io.solutions/api/v1",
-    "TOKEN": os.getenv("TELEGRAM_TOKEN", "7839597384:AAFlm4v3qcudhJfiFfshz1HW6xpKhtqlV5g"),
-    "API_KEY": os.getenv("AI_API_KEY", "io-v2-eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJvd25lciI6ImJlMjYwYjFhLWI0OWMtNDU2MC04ODZiLTMwYTBmMGFlNGZlNSIsImV4cCI6NDg5OTUwNzg0MH0.Z46h1WZ-2jsXyg43r2M0okgeLoSEzrq-ULHRMS-EW6r3ccxYkXTZ5mNJO5Aw1qBAkRI5NX9t8zXc1sbUxt8WzA"),
-    "DEFAULT_SYSTEM_PROMPT": "Вы - полезный AI-ассистент. Предоставляйте точные и информативные ответы. Для технических вопросов и примеров кода используйте Markdown-форматирование.",
-    "MAX_MESSAGE_LENGTH": 4096,
-    "MAX_CONTEXT_LENGTH": 15,  # Максимальное количество сообщений в истории для API
-    "TEMPERATURE": 0.3,  # Уровень креативности (ниже = более предсказуемо)
-    "MAX_TOKENS": 4000,  # Максимальная длина ответа
-    "RETRY_ATTEMPTS": 3,  # Количество попыток переключения модели при ошибке
-    "ADMIN_IDS": [5456372164],  # ID администраторов (заменить на ваши ID)
-    "ALLOWED_FORMATS": ["jpg", "jpeg", "png", "webp"],  # Поддерживаемые форматы изображений
-    "MAX_FILE_SIZE": 10 * 1024 * 1024,  # Максимальный размер файла (10 МБ)
-    "CACHE_TIMEOUT": 3600,  # Время жизни кэша в секундах (1 час)
-    "TYPING_INTERVAL": 3.0,  # Интервал отправки статуса печати в секундах
-    "HISTORY_FILE": "user_history.json",  # Файл для хранения полной истории
-}
-
-
-
-
-# Категории моделей для более удобного представления
-MODEL_CATEGORIES = {
-    "Продвинутые": [
-        "meta-llama/Llama-3.3-70B-Instruct",
-        "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-        "mistralai/Mistral-Large-Instruct-2411",
-        "databricks/dbrx-instruct",
-        "google/gemma-3-27b-it",
-    ],
-    "С возможностью анализа изображений": [
-        "meta-llama/Llama-3.2-90B-Vision-Instruct",
-        "Qwen/Qwen2-VL-7B-Instruct",
-    ],
-    "Специализированные": [
-        "Qwen/Qwen2.5-Coder-32B-Instruct",
-        "nvidia/AceMath-7B-Instruct",
-        "jinaai/ReaderLM-v2",
-        "watt-ai/watt-tool-70B",
-    ],
-    "Универсальные": [
-        "Qwen/QwQ-32B",
-        "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-        "mistralai/Ministral-8B-Instruct-2410",
-        "netease-youdao/Confucius-01-14B",
-        "microsoft/phi-4",
-        "bespokelabs/Bespoke-Stratos-32B",
-        "NovaSky-AI/Sky-T1-32B-Preview",
-        "tiiuae/Falcon3-10B-Instruct",
-        "THUDM/glm-4-9b-chat",
-        "CohereForAI/aya-expanse-326",
-        "openbmb/MiniCPM3-4B",
-        "Qwen/Qwen2.5-1.5B-Instruct",
-        "ozone-ai/ox-1",
-        "microsoft/Phi-3.5-mini-instruct",
-        "ibm-granite/granite-3.1-8b-instruct",
-        "SentientAGI/Dobby-Mini-Unhinged-Llama-3.1-8B",
-        "neuralmagic/Llama-3.1-Nemotron-70B-Instruct-HF-FP8-dynamic",
-    ]
-}
-
-
-
-
-# Список всех моделей из категорий
-ALL_MODELS = []
-for category, models in MODEL_CATEGORIES.items():
-    ALL_MODELS.extend(models)
-
-
-
-
-# Приветственные фразы для простых вопросов
-GREETINGS = {
-    r"(?i)^(привет|хай|здравствуй|здрасте|хелло|hi|hello)": [
-        "Привет! Чем я могу вам помочь?",
-        "Здравствуйте! Готов помочь вам.",
-        "Приветствую! Задавайте ваш вопрос."
-    ],
-    r"(?i)^как дела|как (ты|у тебя)": [
-        "Всё отлично, спасибо! Чем могу помочь?",
-        "Работаю в штатном режиме. Чем могу быть полезен?",
-        "У меня всё хорошо. Готов помочь вам."
-    ],
-    r"(?i)^доброе утро": [
-        "Доброе утро! Чем я могу помочь вам сегодня?",
-        "Доброе утро! Готов к работе."
-    ],
-    r"(?i)^добрый день": [
-        "Добрый день! Чем могу быть полезен?",
-        "Добрый день! Готов ответить на ваши вопросы."
-    ],
-    r"(?i)^добрый вечер": [
-        "Добрый вечер! Чем я могу вам помочь?",
-        "Добрый вечер! Готов к работе."
-    ]
-}
-
-
-
-
-# Настройка логирования
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-file_handler = logging.FileHandler("bot.log")
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-
-
-
-
-# Основные компоненты
-bot = Bot(token=CONFIG["TOKEN"])
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
-router = Router()
-dp.include_router(router)
-dp.message.middleware(ChatActionMiddleware())
-
-
-
-
-# FSM для состояний бота
-class UserStates(StatesGroup):
-    waiting_for_message = State()  # Ожидание сообщения
-    custom_system_prompt = State()  # Ввод пользовательского системного промпта
-    waiting_for_model_selection = State()  # Выбор модели
-    waiting_for_model_search = State()  # Поиск модели
-    waiting_for_direct_model = State()  # Прямой ввод названия модели
-    waiting_for_temperature = State()  # Настройка temperature
-    waiting_for_thinking_budget = State()  # Настройка thinking_budget
-    viewing_history = State()  # Просмотр истории
-
-
-
-
-# Кэш и переменные для моделей
-model_cache = {}  # Кэш ответов моделей
-user_settings = {}  # Настройки пользователей
-user_contexts = {}  # История диалогов с пользователями (для API)
-user_full_history = {}  # Полная история диалогов (для хранения)
-typing_tasks = {}  # Задачи непрерывной отправки статуса печати
-favorite_models = {}  # Избранные модели пользователей
-
-
-
-
-# Функции-помощники
-def format_model_name(model_name: str) -> str:
-    """Форматирует имя модели для отображения."""
-    return model_name.split('/')[-1]
-
-
-
-
-def save_user_settings():
-    """Сохраняет настройки пользователей в JSON-файл."""
-    with open('user_settings.json', 'w', encoding='utf-8') as f:
-        json.dump(user_settings, f, ensure_ascii=False, indent=2)
-
-
-
-
-def save_user_history():
-    """Сохраняет полную историю диалогов пользователей в JSON-файл."""
-    with open(CONFIG["HISTORY_FILE"], 'w', encoding='utf-8') as f:
-        # Преобразуем ключи-числа в строки для JSON
-        serializable_history = {str(k): v for k, v in user_full_history.items()}
-        json.dump(serializable_history, f, ensure_ascii=False, indent=2)
-
-
-
-
-def load_user_settings():
-    """Загружает настройки пользователей из JSON-файла."""
-    global user_settings
-    try:
-        with open('user_settings.json', 'r', encoding='utf-8') as f:
-            user_settings = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        user_settings = {}
-        save_user_settings()
-
-
-
-
-    # Миграция старых настроек
-    for user_id, settings in user_settings.items():
-        if "requests_left" not in settings:
-            user_settings[user_id]["requests_left"] = 10
-            user_settings[user_id]["last_reset"] = str(date.today())
-        if "model" not in settings:
-            user_settings[user_id]["model"] = ALL_MODELS[0]
-        if "system_prompt" not in settings:
-            user_settings[user_id]["system_prompt"] = CONFIG["DEFAULT_SYSTEM_PROMPT"]
-        if "temperature" not in settings:
-            user_settings[user_id]["temperature"] = CONFIG["TEMPERATURE"]
-        if "thinking_budget" not in settings:
-            user_settings[user_id]["thinking_budget"] = 0
-        if "favorite_models" not in settings:
-            user_settings[user_id]["favorite_models"] = []
-
-
-
-
-    save_user_settings()
-
-
-
-
-def load_user_history():
-    """Загружает полную историю диалогов пользователей из JSON-файла."""
-    global user_full_history
-    try:
-        with open(CONFIG["HISTORY_FILE"], 'r', encoding='utf-8') as f:
-            history_data = json.load(f)
-            # Преобразуем ключи-строки обратно в числа
-            user_full_history = {int(k): v for k, v in history_data.items()}
-    except (FileNotFoundError, json.JSONDecodeError):
-        user_full_history = {}
-        save_user_history()
-
-
-
-
-async def continuous_typing_action(chat_id: int, stop_event: asyncio.Event):
-    """Непрерывно отправляет статус 'печатает' в чат, пока не будет остановлен."""
-    while not stop_event.is_set():
-        try:
-            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            await asyncio.sleep(CONFIG["TYPING_INTERVAL"])
-        except Exception as e:
-            logger.error(f"Ошибка при отправке статуса печати: {e}")
-            await asyncio.sleep(1)  # Короткая пауза в случае ошибки
-
-
-
-
-async def start_typing_action(chat_id: int) -> asyncio.Event:
-    """Запускает непрерывную отправку статуса 'печатает' и возвращает событие для остановки."""
-    stop_event = asyncio.Event()
-
-    # Останавливаем предыдущую задачу, если она существует
-    if chat_id in typing_tasks and not typing_tasks[chat_id]["stop_event"].is_set():
-        typing_tasks[chat_id]["stop_event"].set()
-        try:
-            await typing_tasks[chat_id]["task"]
-        except Exception as e:
-            logger.error(f"Ошибка при остановке предыдущей задачи печати: {e}")
-
-    # Создаем новую задачу
-    task = asyncio.create_task(continuous_typing_action(chat_id, stop_event))
-    typing_tasks[chat_id] = {"task": task, "stop_event": stop_event}
-
-    return stop_event
-
-
-
-
-async def stop_typing_action(chat_id: int):
-    """Останавливает непрерывную отправку статуса 'печатает'."""
-    if chat_id in typing_tasks and not typing_tasks[chat_id]["stop_event"].is_set():
-        typing_tasks[chat_id]["stop_event"].set()
-        try:
-            await typing_tasks[chat_id]["task"]
-        except Exception as e:
-            logger.error(f"Ошибка при остановке задачи печати: {e}")
-
-
-
-
-def get_user_model(user_id: int) -> str:
-    """Возвращает модель, выбранную пользователем, или модель по умолчанию."""
-    if str(user_id) not in user_settings:
-        user_settings[str(user_id)] = {
-            "model": ALL_MODELS[0],
-            "system_prompt": CONFIG["DEFAULT_SYSTEM_PROMPT"],
-            "temperature": CONFIG["TEMPERATURE"],
-            "thinking_budget": 0,
-            "favorite_models": []
-        }
-        save_user_settings()
-    return user_settings[str(user_id)].get("model", ALL_MODELS[0])
-
-
-
-
-def get_system_prompt(user_id: int) -> str:
-    """Возвращает системный промпт пользователя или промпт по умолчанию."""
-    if str(user_id) not in user_settings:
-        return CONFIG["DEFAULT_SYSTEM_PROMPT"]
-    return user_settings[str(user_id)].get("system_prompt", CONFIG["DEFAULT_SYSTEM_PROMPT"])
-
-
-
-
-def get_user_temperature(user_id: int) -> float:
-    """Возвращает значение temperature для пользователя или значение по умолчанию."""
-    if str(user_id) not in user_settings:
-        return CONFIG["TEMPERATURE"]
-    return user_settings[str(user_id)].get("temperature", CONFIG["TEMPERATURE"])
-
-
-
-
-def get_user_thinking_budget(user_id: int) -> int:
-    """Возвращает значение thinking_budget для пользователя."""
-    if str(user_id) not in user_settings:
-        return 0
-    return user_settings[str(user_id)].get("thinking_budget", 0)
-
-
-
-
-def get_user_favorite_models(user_id: int) -> List[str]:
-    """Возвращает список избранных моделей пользователя."""
-    if str(user_id) not in user_settings:
+from enum import Enum
+from typing import List, Tuple, Optional, Dict, Any
+from dataclasses import dataclass
+
+# Инициализация Pygame
+pygame.init()
+
+# Константы игры
+SCREEN_WIDTH = 360
+SCREEN_HEIGHT = 640
+FPS = 60
+
+# Цвета
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 100, 255)
+ORANGE = (255, 165, 0)
+YELLOW = (255, 255, 0)
+RED = (255, 0, 0)
+PURPLE = (128, 0, 128)
+CYAN = (0, 255, 255)
+GRAY = (128, 128, 128)
+DARK_BLUE = (0, 0, 139)
+
+# Физические константы
+GRAVITY = 0.8
+MAX_FALL_SPEED = 15
+JUMP_STRENGTH = -12
+LONG_JUMP_STRENGTH = -18
+AIR_RESISTANCE = 0.98
+PLATFORM_BOUNCE = 0.3
+
+# Игровые константы
+PLAYER_SIZE = 20
+PLATFORM_HEIGHT = 10
+MIN_PLATFORM_WIDTH = 60
+MAX_PLATFORM_WIDTH = 100
+PLATFORM_SPACING_Y = 80
+CRYSTAL_SIZE = 12
+BONUS_SIZE = 16
+
+class GameState(Enum):
+    MENU = "menu"
+    PLAYING = "playing"
+    PAUSED = "paused"
+    GAME_OVER = "game_over"
+
+class PlatformType(Enum):
+    NORMAL = "normal"
+    MOVING = "moving"
+    FRAGILE = "fragile"
+    SPRING = "spring"
+
+@dataclass
+class Vector2:
+    x: float
+    y: float
+    
+    def __add__(self, other):
+        return Vector2(self.x + other.x, self.y + other.y)
+    
+    def __mul__(self, scalar):
+        return Vector2(self.x * scalar, self.y * scalar)
+
+class Particle:
+    """Класс для эффектов частиц"""
+    def __init__(self, x: float, y: float, vel_x: float, vel_y: float, color: Tuple[int, int, int], life: int):
+        self.x = x
+        self.y = y
+        self.vel_x = vel_x
+        self.vel_y = vel_y
+        self.color = color
+        self.life = life
+        self.max_life = life
+        self.size = random.randint(2, 4)
+    
+    def update(self):
+        self.x += self.vel_x
+        self.y += self.vel_y
+        self.vel_y += 0.2  # Гравитация для частиц
+        self.life -= 1
+        
+        # Уменьшаем размер со временем
+        self.size = max(1, int(self.size * (self.life / self.max_life)))
+    
+    def draw(self, screen: pygame.Surface, camera_y: float):
+        if self.life > 0:
+            alpha = int(255 * (self.life / self.max_life))
+            color = (*self.color, alpha)
+            pygame.draw.circle(screen, self.color, (int(self.x), int(self.y - camera_y)), self.size)
+
+class Player:
+    """Класс игрока - антигравитационный робот-шарик"""
+    def __init__(self, x: float, y: float):
+        self.x = x
+        self.y = y
+        self.vel_x = 0.0
+        self.vel_y = 0.0
+        self.size = PLAYER_SIZE
+        self.on_ground = False
+        self.jump_charge = 0.0
+        self.max_jump_charge = 30
+        self.glow_intensity = 0
+        self.glow_direction = 1
+        self.shield_active = False
+        self.shield_time = 0
+        
+    def update(self, platforms: List['Platform']):
+        # Применяем гравитацию
+        if not self.on_ground:
+            self.vel_y += GRAVITY
+            if self.vel_y > MAX_FALL_SPEED:
+                self.vel_y = MAX_FALL_SPEED
+        
+        # Применяем сопротивление воздуха к горизонтальному движению
+        self.vel_x *= AIR_RESISTANCE
+        
+        # Обновляем позицию
+        self.x += self.vel_x
+        self.y += self.vel_y
+        
+        # Ограничиваем движение по горизонтали
+        if self.x < self.size:
+            self.x = self.size
+            self.vel_x = 0
+        elif self.x > SCREEN_WIDTH - self.size:
+            self.x = SCREEN_WIDTH - self.size
+            self.vel_x = 0
+        
+        # Проверяем коллизии с платформами
+        self.check_platform_collisions(platforms)
+        
+        # Обновляем эффект свечения
+        self.glow_intensity += self.glow_direction * 3
+        if self.glow_intensity >= 50:
+            self.glow_intensity = 50
+            self.glow_direction = -1
+        elif self.glow_intensity <= 0:
+            self.glow_intensity = 0
+            self.glow_direction = 1
+        
+        # Обновляем щит
+        if self.shield_active:
+            self.shield_time -= 1
+            if self.shield_time <= 0:
+                self.shield_active = False
+    
+    def check_platform_collisions(self, platforms: List['Platform']):
+        self.on_ground = False
+        
+        for platform in platforms:
+            if not platform.active:
+                continue
+                
+            # Проверяем коллизию сверху (приземление на платформу)
+            if (self.vel_y > 0 and 
+                self.y + self.size > platform.y and 
+                self.y + self.size < platform.y + PLATFORM_HEIGHT + 10 and
+                self.x + self.size > platform.x and 
+                self.x - self.size < platform.x + platform.width):
+                
+                self.y = platform.y - self.size
+                self.vel_y = 0
+                self.on_ground = True
+                
+                # Обрабатываем разные типы платформ
+                if platform.platform_type == PlatformType.SPRING:
+                    self.vel_y = LONG_JUMP_STRENGTH * 1.5
+                    self.on_ground = False
+                    return [Particle(self.x + random.randint(-10, 10), self.y + self.size, 
+                                   random.uniform(-3, 3), random.uniform(-5, -2), 
+                                   YELLOW, random.randint(20, 40)) for _ in range(8)]
+                
+                elif platform.platform_type == PlatformType.FRAGILE:
+                    platform.trigger_destruction()
+                
+                # Если платформа движется, передаем импульс игроку
+                if platform.platform_type == PlatformType.MOVING:
+                    self.vel_x += platform.vel_x * 0.3
+                
+                break
+        
         return []
-    return user_settings[str(user_id)].get("favorite_models", [])
-
-
-
-
-def add_to_favorite_models(user_id: int, model: str):
-    """Добавляет модель в избранное пользователя."""
-    if str(user_id) not in user_settings:
-        user_settings[str(user_id)] = {
-            "model": ALL_MODELS[0],
-            "system_prompt": CONFIG["DEFAULT_SYSTEM_PROMPT"],
-            "temperature": CONFIG["TEMPERATURE"],
-            "thinking_budget": 0,
-            "favorite_models": []
-        }
-
-    favorites = user_settings[str(user_id)].get("favorite_models", [])
-    if model not in favorites:
-        favorites.append(model)
-        user_settings[str(user_id)]["favorite_models"] = favorites
-        save_user_settings()
-
-
-
-
-def remove_from_favorite_models(user_id: int, model: str):
-    """Удаляет модель из избранного пользователя."""
-    if str(user_id) in user_settings and "favorite_models" in user_settings[str(user_id)]:
-        favorites = user_settings[str(user_id)]["favorite_models"]
-        if model in favorites:
-            favorites.remove(model)
-            user_settings[str(user_id)]["favorite_models"] = favorites
-            save_user_settings()
-
-
-
-
-def get_user_context(user_id: int) -> List[Dict[str, str]]:
-    """Возвращает контекст диалога с пользователем для API."""
-    if user_id not in user_contexts:
-        user_contexts[user_id] = []
-    return user_contexts[user_id]
-
-
-
-
-def get_user_full_history(user_id: int) -> List[Dict[str, str]]:
-    """Возвращает полную историю диалога с пользователем."""
-    if user_id not in user_full_history:
-        user_full_history[user_id] = []
-    return user_full_history[user_id]
-
-
-
-
-def add_to_user_context(user_id: int, role: str, content: str):
-    """Добавляет сообщение в контекст диалога с пользователем для API."""
-    if user_id not in user_contexts:
-        user_contexts[user_id] = []
-
-    # Добавляем новое сообщение
-    user_contexts[user_id].append({"role": role, "content": content})
-
-    # Ограничиваем длину истории для API
-    if len(user_contexts[user_id]) > CONFIG["MAX_CONTEXT_LENGTH"] * 2:  # *2 чтобы учесть пары вопрос-ответ
-        # Оставляем первое сообщение (обычно системное) и последние N сообщений
-        user_contexts[user_id] = [user_contexts[user_id][0]] + user_contexts[user_id][-(CONFIG["MAX_CONTEXT_LENGTH"]*2-1):]
-
-    # Также добавляем в полную историю
-    add_to_user_full_history(user_id, role, content)
-
-
-
-
-def add_to_user_full_history(user_id: int, role: str, content: str):
-    """Добавляет сообщение в полную историю диалога с пользователем."""
-    if user_id not in user_full_history:
-        user_full_history[user_id] = []
-
-    # Добавляем новое сообщение с временной меткой
-    message = {
-        "role": role, 
-        "content": content,
-        "timestamp": datetime.now().isoformat()
-    }
-
-    user_full_history[user_id].append(message)
-
-    # Сохраняем историю в файл
-    save_user_history()
-
-
-
-
-def clear_user_context(user_id: int):
-    """Очищает контекст диалога с пользователем для API."""
-    if user_id in user_contexts:
-        # Сохраняем только системный промпт, если он есть
-        system_messages = [msg for msg in user_contexts[user_id] if msg["role"] == "system"]
-        user_contexts[user_id] = system_messages if system_messages else []
-
-    # Добавляем разделитель в полную историю
-    if user_id in user_full_history and user_full_history[user_id]:
-        add_to_user_full_history(user_id, "system", "--- НОВЫЙ ДИАЛОГ ---")
-
-
-
-
-def is_greeting(text: str) -> Optional[str]:
-    """Проверяет, является ли текст приветствием, и возвращает ответ, если да."""
-    import random
-    for pattern, responses in GREETINGS.items():
-        if re.match(pattern, text.strip()):
-            return random.choice(responses)
-    return None
-
-
-
-
-def search_models(query: str) -> List[str]:
-    """Ищет модели по запросу."""
-    query = query.lower()
-    results = []
-
-    for model in ALL_MODELS:
-        model_name = model.lower()
-        if query in model_name:
-            results.append(model)
-
-    return results
-
-
-
-
-def extract_thinking_budget_param(message_text: str) -> tuple[str, Optional[int]]:
-    """Извлекает параметр thinking_budget из текста сообщения."""
-    pattern = r'--thinking_budget\s+(\d+)'
-    match = re.search(pattern, message_text)
-
-    if match:
-        budget = int(match.group(1))
-        # Удаляем параметр из текста
-        cleaned_text = re.sub(pattern, '', message_text).strip()
-        return cleaned_text, budget
-
-    return message_text, None
-
-
-
-
-def extract_model_param(message_text: str) -> tuple[str, Optional[str]]:
-    """Извлекает параметр модели из текста сообщения."""
-    pattern = r'--model\s+([^\s]+)'
-    match = re.search(pattern, message_text)
-
-    if match:
-        model_query = match.group(1)
-        # Удаляем параметр из текста
-        cleaned_text = re.sub(pattern, '', message_text).strip()
-
-        # Ищем модель по запросу
-        matching_models = []
-        for model in ALL_MODELS:
-            if model_query.lower() in model.lower():
-                matching_models.append(model)
-
-        # Возвращаем первую найденную модель или None
-        model = matching_models[0] if matching_models else None
-        return cleaned_text, model
-
-    return message_text, None
-
-
-
-
-async def process_image(photo: PhotoSize) -> Optional[str]:
-    """Обрабатывает изображение и возвращает его в base64 кодировке."""
-    try:
-        file_info = await bot.get_file(photo.file_id)
-        file_path = file_info.file_path
-
-
-
-
-        if file_info.file_size > CONFIG["MAX_FILE_SIZE"]:
-            return None
-
-
-
-
-        # Получаем файл через Telegram API
-        file_url = f"https://api.telegram.org/file/bot{CONFIG['TOKEN']}/{file_path}"
-        response = requests.get(file_url)
-
-
-
-
-        if response.status_code != 200:
-            return None
-
-
-
-
-        # Кодируем файл в base64
-        import base64
-        file_content = base64.b64encode(response.content).decode('utf-8')
-
-
-
-
-        # Определяем тип файла
-        file_extension = file_path.split('.')[-1].lower()
-        if file_extension not in CONFIG["ALLOWED_FORMATS"]:
-            return None
-
-
-
-
-        return f"data:image/{file_extension};base64,{file_content}"
-
-
-
-
-    except Exception as e:
-        logger.error(f"Ошибка при обработке изображения: {e}")
-        return None
-
-
-
-
-async def split_and_send_message(message: Message, text: str, parse_mode: Optional[str] = ParseMode.MARKDOWN):
-    """Разделяет длинный текст на части и отправляет их."""
-    max_length = CONFIG["MAX_MESSAGE_LENGTH"]
-
-
-
-
-    if len(text) <= max_length:
-        await message.answer(text, parse_mode=parse_mode)
-        return
-
-
-
-
-    # Разбиваем на части с сохранением целостности блоков кода
-    parts = []
-    current_part = ""
-    code_block = False
-
-
-
-
-    for line in text.split('\n'):
-        # Проверяем, является ли строка началом или концом блока кода
-        if line.strip().startswith('```') and line.strip().count('```') % 2 != 0:
-            code_block = not code_block
-
-
-
-
-        # Если текущая часть + строка не превышает лимит
-        if len(current_part + line + '\n') <= max_length:
-            current_part += line + '\n'
-        else:
-            # Если мы находимся в блоке кода, завершаем его перед разрывом
-            if code_block:
-                current_part += '```\n'
-                parts.append(current_part)
-                current_part = '```' + line.split('```', 1)[-1] + '\n'
-                # Восстанавливаем состояние блока кода
-                if line.strip().count('```') % 2 != 0:
-                    code_block = not code_block
+    
+    def jump(self, charge_time: float = 0.0):
+        """Прыжок с учетом времени зарядки"""
+        if self.on_ground:
+            # Базовая сила прыжка + бонус от зарядки
+            jump_power = JUMP_STRENGTH + (charge_time / self.max_jump_charge) * (LONG_JUMP_STRENGTH - JUMP_STRENGTH)
+            self.vel_y = jump_power
+            self.on_ground = False
+            
+            # Создаем частицы при прыжке
+            return [Particle(self.x + random.randint(-self.size, self.size), self.y + self.size, 
+                           random.uniform(-2, 2), random.uniform(-3, -1), 
+                           CYAN, random.randint(15, 30)) for _ in range(5)]
+        return []
+    
+    def move_horizontal(self, direction: float):
+        """Горизонтальное движение в воздухе"""
+        if not self.on_ground:
+            self.vel_x += direction * 0.5
+            # Ограничиваем максимальную горизонтальную скорость
+            max_vel = 8
+            if self.vel_x > max_vel:
+                self.vel_x = max_vel
+            elif self.vel_x < -max_vel:
+                self.vel_x = -max_vel
+    
+    def draw(self, screen: pygame.Surface, camera_y: float):
+        screen_y = self.y - camera_y
+        
+        # Рисуем свечение
+        glow_radius = self.size + self.glow_intensity // 3
+        glow_color = (0, 150 + self.glow_intensity, 255 - self.glow_intensity // 2)
+        pygame.draw.circle(screen, glow_color, (int(self.x), int(screen_y)), glow_radius, 3)
+        
+        # Рисуем основной шарик
+        pygame.draw.circle(screen, CYAN, (int(self.x), int(screen_y)), self.size)
+        pygame.draw.circle(screen, WHITE, (int(self.x), int(screen_y)), self.size, 2)
+        
+        # Рисуем "глаза" робота
+        eye_offset = self.size // 3
+        pygame.draw.circle(screen, WHITE, (int(self.x - eye_offset), int(screen_y - eye_offset)), 4)
+        pygame.draw.circle(screen, WHITE, (int(self.x + eye_offset), int(screen_y - eye_offset)), 4)
+        pygame.draw.circle(screen, BLACK, (int(self.x - eye_offset), int(screen_y - eye_offset)), 2)
+        pygame.draw.circle(screen, BLACK, (int(self.x + eye_offset), int(screen_y - eye_offset)), 2)
+        
+        # Рисуем щит
+        if self.shield_active:
+            shield_alpha = min(255, self.shield_time * 3)
+            shield_color = (255, 215, 0, shield_alpha)
+            pygame.draw.circle(screen, (255, 215, 0), (int(self.x), int(screen_y)), self.size + 8, 3)
+
+class Platform:
+    """Класс платформы"""
+    def __init__(self, x: float, y: float, width: float, platform_type: PlatformType):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.platform_type = platform_type
+        self.active = True
+        self.destruction_timer = 0
+        self.max_destruction_time = 30  # 0.5 секунды при 60 FPS
+        self.vel_x = 0
+        self.spring_animation = 0
+        
+        # Настройки для движущихся платформ
+        if platform_type == PlatformType.MOVING:
+            self.vel_x = random.choice([-2, -1, 1, 2])
+            self.move_range = random.randint(80, 120)
+            self.start_x = x
+    
+    def update(self):
+        # Обновляем движущиеся платформы
+        if self.platform_type == PlatformType.MOVING and self.active:
+            self.x += self.vel_x
+            
+            # Отскакиваем от границ движения
+            if abs(self.x - self.start_x) > self.move_range:
+                self.vel_x *= -1
+            
+            # Отскакиваем от границ экрана
+            if self.x <= 0 or self.x + self.width >= SCREEN_WIDTH:
+                self.vel_x *= -1
+                self.x = max(0, min(SCREEN_WIDTH - self.width, self.x))
+        
+        # Обновляем хрупкие платформы
+        if self.platform_type == PlatformType.FRAGILE and self.destruction_timer > 0:
+            self.destruction_timer += 1
+            if self.destruction_timer >= self.max_destruction_time:
+                self.active = False
+        
+        # Анимация пружин
+        if self.platform_type == PlatformType.SPRING:
+            self.spring_animation = max(0, self.spring_animation - 1)
+    
+    def trigger_destruction(self):
+        """Запускает разрушение хрупкой платформы"""
+        if self.platform_type == PlatformType.FRAGILE:
+            self.destruction_timer = 1
+    
+    def draw(self, screen: pygame.Surface, camera_y: float):
+        if not self.active:
+            return
+        
+        screen_y = self.y - camera_y
+        
+        # Определяем цвет платформы
+        if self.platform_type == PlatformType.NORMAL:
+            color = GREEN
+        elif self.platform_type == PlatformType.MOVING:
+            # Мигающий индикатор движения
+            flash = int(pygame.time.get_ticks() / 200) % 2
+            color = BLUE if flash else (0, 50, 200)
+        elif self.platform_type == PlatformType.FRAGILE:
+            # Постепенное исчезновение
+            if self.destruction_timer > 0:
+                alpha = 1.0 - (self.destruction_timer / self.max_destruction_time)
+                color = (int(ORANGE[0] * alpha), int(ORANGE[1] * alpha), int(ORANGE[2] * alpha))
             else:
-                parts.append(current_part)
-                current_part = line + '\n'
-
-
-
-
-    # Добавляем последнюю часть
-    if current_part:
-        parts.append(current_part)
-
-
-
-
-    # Отправляем все части
-    for part in parts:
-        await message.answer(part, parse_mode=parse_mode)
-        await asyncio.sleep(0.3)  # Небольшая задержка между сообщениями
-
-
-
-
-async def format_history_page(user_id: int, page: int = 0, page_size: int = 5) -> tuple[str, int, int]:
-    """Форматирует страницу истории диалогов пользователя."""
-    history = get_user_full_history(user_id)
-
-    if not history:
-        return "📜 История диалогов пуста.", 0, 0
-
-    # Разбиваем историю на блоки диалогов
-    dialogs = []
-    current_dialog = []
-
-    for message in history:
-        if message["role"] == "system" and "НОВЫЙ ДИАЛОГ" in message.get("content", ""):
-            if current_dialog:
-                dialogs.append(current_dialog)
-                current_dialog = []
-        else:
-            current_dialog.append(message)
-
-    if current_dialog:
-        dialogs.append(current_dialog)
-
-    # Разворачиваем диалоги в обратном порядке (новые сначала)
-    dialogs.reverse()
-
-    # Вычисляем общее количество страниц
-    total_pages = len(dialogs)
-
-    # Проверяем корректность номера страницы
-    if page >= total_pages:
-        page = total_pages - 1
-    if page < 0:
-        page = 0
-
-    # Если диалогов нет
-    if not dialogs:
-        return "📜 История диалогов пуста.", 0, 0
-
-    # Форматируем выбранный диалог
-    dialog = dialogs[page]
-
-    dialog_date = None
-    try:
-        # Получаем дату первого сообщения в диалоге
-        if "timestamp" in dialog[0]:
-            dialog_date = datetime.fromisoformat(dialog[0]["timestamp"]).strftime("%d.%m.%Y %H:%M")
-    except (IndexError, ValueError, KeyError) as e:
-        logger.error(f"Ошибка при получении даты диалога: {e}")
-
-    header = f"📜 **История диалогов** (диалог {page + 1} из {total_pages})"
-    if dialog_date:
-        header += f" - {dialog_date}"
-
-    formatted_messages = []
-
-    for msg in dialog:
-        if msg["role"] == "system" and "НОВЫЙ ДИАЛОГ" not in msg.get("content", ""):
-            # Системные сообщения (кроме разделителей) не показываем
-            continue
-
-        role_icon = {
-            "user": "👤",
-            "assistant": "🤖",
-            "system": "🔄"
-        }.get(msg["role"], "❓")
-
-        # Для длинных сообщений делаем обрезку
-        content = msg["content"]
-        if len(content) > 300:
-            content = content[:297] + "..."
-
-        # Форматируем сообщение
-        formatted_msg = f"{role_icon} **{msg['role'].capitalize()}**: {content}"
-        formatted_messages.append(formatted_msg)
-
-    return header + "\n\n" + "\n\n".join(formatted_messages), page, total_pages
-
-
-
-
-async def create_model_selection_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру для выбора модели по категориям."""
-    builder = InlineKeyboardBuilder()
-
-
-
-
-    # Добавляем кнопки категорий
-    for category in MODEL_CATEGORIES:
-        builder.row(
-            InlineKeyboardButton(
-                text=f"📚 {category} ({len(MODEL_CATEGORIES[category])})",
-                callback_data=f"category:{category}"
-            )
-        )
-
-    # Добавляем кнопку поиска
-    builder.row(
-        InlineKeyboardButton(
-            text="🔍 Поиск модели по названию",
-            callback_data="search_model"
-        )
-    )
-
-    # Добавляем кнопку прямого ввода модели
-    builder.row(
-        InlineKeyboardButton(
-            text="⌨️ Ввести название модели",
-            callback_data="direct_model"
-        )
-    )
-
-    # Добавляем кнопку "Избранные модели"
-    builder.row(
-        InlineKeyboardButton(
-            text="⭐ Избранные модели",
-            callback_data="favorite_models"
-        )
-    )
-
-    # Добавляем кнопку "Все модели"
-    builder.row(
-        InlineKeyboardButton(
-            text="📋 Показать все модели",
-            callback_data="all_models"
-        )
-    )
-
-
-
-
-    return builder.as_markup()
-
-
-
-
-async def create_category_models_keyboard(category: str) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с моделями определенной категории."""
-    builder = InlineKeyboardBuilder()
-
-
-
-
-    # Добавляем модели из выбранной категории
-    for model in MODEL_CATEGORIES.get(category, []):
-        builder.row(
-            InlineKeyboardButton(
-                text=format_model_name(model),
-                callback_data=f"model:{model}"
-            )
-        )
-
-
-
-
-    # Кнопка "Назад"
-    builder.row(
-        InlineKeyboardButton(
-            text="⬅️ Назад к категориям",
-            callback_data="back_to_categories"
-        )
-    )
-
-
-
-
-    return builder.as_markup()
-
-
-async def create_all_models_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру со всеми доступными моделями."""
-    builder = InlineKeyboardBuilder()
-
-    # Добавляем все модели
-    for model in ALL_MODELS:
-        builder.row(
-            InlineKeyboardButton(
-                text=format_model_name(model),
-                callback_data=f"model:{model}"
-            )
-        )
-
-    # Кнопка "Назад"
-    builder.row(
-        InlineKeyboardButton(
-            text="⬅️ Назад к категориям",
-            callback_data="back_to_categories"
-        )
-    )
-
-    return builder.as_markup()
-
-
-async def create_favorite_models_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с избранными моделями пользователя."""
-    builder = InlineKeyboardBuilder()
-
-    favorite_models = get_user_favorite_models(user_id)
-
-    if not favorite_models:
-        builder.row(
-            InlineKeyboardButton(
-                text="У вас нет избранных моделей",
-                callback_data="no_action"
-            )
-        )
-    else:
-        # Добавляем избранные модели
-        for model in favorite_models:
-            builder.row(
-                InlineKeyboardButton(
-                    text=format_model_name(model),
-                    callback_data=f"model:{model}"
-                )
-            )
-
-    # Кнопка "Назад"
-    builder.row(
-        InlineKeyboardButton(
-            text="⬅️ Назад к категориям",
-            callback_data="back_to_categories"
-        )
-    )
-
-    return builder.as_markup()
-
-
-async def create_search_results_keyboard(models: List[str]) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с результатами поиска моделей."""
-    builder = InlineKeyboardBuilder()
-
-    if not models:
-        builder.row(
-            InlineKeyboardButton(
-                text="Модели не найдены",
-                callback_data="no_action"
-            )
-        )
-    else:
-        # Добавляем найденные модели
-        for model in models:
-            builder.row(
-                InlineKeyboardButton(
-                    text=format_model_name(model),
-                    callback_data=f"model:{model}"
-                )
-            )
-
-    # Кнопка "Назад"
-    builder.row(
-        InlineKeyboardButton(
-            text="⬅️ Назад к категориям",
-            callback_data="back_to_categories"
-        )
-    )
-
-    return builder.as_markup()
-
-
-async def create_model_actions_keyboard(model: str, user_id: int) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с действиями для модели."""
-    builder = InlineKeyboardBuilder()
-
-    # Проверяем, находится ли модель в избранном
-    is_favorite = model in get_user_favorite_models(user_id)
-
-    # Текущая выбранная модель
-    current_model = get_user_model(user_id)
-    is_current = model == current_model
-
-    # Добавляем кнопку выбора/текущей модели
-    if is_current:
-        builder.row(
-            InlineKeyboardButton(
-                text="✅ Текущая модель",
-                callback_data="no_action"
-            )
-        )
-    else:
-        builder.row(
-            InlineKeyboardButton(
-                text="✅ Выбрать эту модель",
-                callback_data=f"select_model:{model}"
-            )
-        )
-
-    # Добавляем кнопку добавления/удаления из избранного
-    if is_favorite:
-        builder.row(
-            InlineKeyboardButton(
-                text="❌ Удалить из избранного",
-                callback_data=f"unfavorite:{model}"
-            )
-        )
-    else:
-        builder.row(
-            InlineKeyboardButton(
-                text="⭐ Добавить в избранное",
-                callback_data=f"favorite:{model}"
-            )
-        )
-
-    # Кнопка "Назад"
-    builder.row(
-        InlineKeyboardButton(
-            text="⬅️ Назад к моделям",
-            callback_data="back_to_categories"
-        )
-    )
-
-    return builder.as_markup()
-
-
-
-
-async def create_temperature_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру для выбора значения temperature."""
-    builder = InlineKeyboardBuilder()
-
-
-
-
-    # Значения temperature от 0.0 до 1.0 с шагом 0.2
-    values = [
-        ("0.0 (Наиболее точно)", "0.0"),
-        ("0.2 (Точно)", "0.2"),
-        ("0.4 (Сбалансировано)", "0.4"),
-        ("0.6 (Творчески)", "0.6"),
-        ("0.8 (Более творчески)", "0.8"),
-        ("1.0 (Максимально творчески)", "1.0")
-    ]
-
-
-
-
-    for label, value in values:
-        builder.row(
-            InlineKeyboardButton(
-                text=label,
-                callback_data=f"temp:{value}"
-            )
-        )
-
-
-
-
-    return builder.as_markup()
-
-
-async def create_thinking_budget_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру для выбора значения thinking_budget."""
-    builder = InlineKeyboardBuilder()
-
-    # Различные значения thinking_budget
-    values = [
-        ("Выключено (0)", "0"),
-        ("Небольшой (2048)", "2048"),
-        ("Средний (4096)", "4096"),
-        ("Большой (8192)", "8192"),
-        ("Максимальный (16384)", "16384")
-    ]
-
-    for label, value in values:
-        builder.row(
-            InlineKeyboardButton(
-                text=label,
-                callback_data=f"think:{value}"
-            )
-        )
-
-    return builder.as_markup()
-
-
-async def create_history_navigation_keyboard(current_page: int, total_pages: int) -> InlineKeyboardMarkup:
-    """Создает клавиатуру для навигации по истории диалогов."""
-    builder = InlineKeyboardBuilder()
-
-    # Кнопки навигации
-    if total_pages > 1:
-        row = []
-
-        # Кнопка "В начало"
-        if current_page > 0:
-            row.append(
-                InlineKeyboardButton(
-                    text="« Первый",
-                    callback_data="history:0"
-                )
-            )
-
-        # Кнопка "Назад"
-        if current_page > 0:
-            row.append(
-                InlineKeyboardButton(
-                    text="< Пред.",
-                    callback_data=f"history:{current_page-1}"
-                )
-            )
-
-        # Кнопка "Вперед"
-        if current_page < total_pages - 1:
-            row.append(
-                InlineKeyboardButton(
-                    text="След. >",
-                    callback_data=f"history:{current_page+1}"
-                )
-            )
-
-        # Кнопка "В конец"
-        if current_page < total_pages - 1:
-            row.append(
-                InlineKeyboardButton(
-                    text="Последний »",
-                    callback_data=f"history:{total_pages-1}"
-                )
-            )
-
-        builder.row(*row)
-
-    # Закрыть историю
-    builder.row(
-        InlineKeyboardButton(
-            text="🔙 Закрыть историю",
-            callback_data="close_history"
-        )
-    )
-
-    return builder.as_markup()
-
-
-
-
-async def get_ai_response(user_id: int, message_text: str, image_data: Optional[str] = None) -> str:
-    """Получает ответ от API на основе настроек пользователя."""
-    # Извлекаем параметр модели из сообщения, если он есть
-    message_text, model_param = extract_model_param(message_text)
-
-    # Используем модель из параметра сообщения или берем из настроек пользователя
-    model = model_param if model_param is not None else get_user_model(user_id)
-
-    system_prompt = get_system_prompt(user_id)
-    temperature = get_user_temperature(user_id)
-
-    # Извлекаем параметр thinking_budget из сообщения, если он есть
-    message_text, thinking_budget_param = extract_thinking_budget_param(message_text)
-
-    # Используем значение из сообщения или берем из настроек пользователя
-    thinking_budget = thinking_budget_param if thinking_budget_param is not None else get_user_thinking_budget(user_id)
-
-
-
-
-    # Запускаем непрерывную отправку статуса "печатает"
-    stop_event = await start_typing_action(user_id)
-
-
-
-
-    # Проверяем кэш для экономии запросов к API
-    cache_key = f"{model}:{message_text}:{temperature}:{thinking_budget}"
-    if cache_key in model_cache and time.time() - model_cache[cache_key]["timestamp"] < CONFIG["CACHE_TIMEOUT"]:
-        # Останавливаем отправку статуса "печатает"
-        await stop_typing_action(user_id)
-        return model_cache[cache_key]["response"]
-
-
-
-
-    # Получаем контекст пользователя
-    context = get_user_context(user_id)
-
-
-
-
-    # Если контекст пуст, добавляем системное сообщение
-    if not context:
-        add_to_user_context(user_id, "system", system_prompt)
-
-
-
-
-    # Создаем новое сообщение от пользователя
-    user_message = {"role": "user", "content": message_text}
-
-
-
-
-    # Если есть изображение, добавляем его в сообщение
-    if image_data:
-        user_message = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": message_text},
-                {"type": "image_url", "image_url": {"url": image_data}}
+                color = ORANGE
+        elif self.platform_type == PlatformType.SPRING:
+            color = YELLOW
+        
+        # Рисуем платформу
+        rect = pygame.Rect(self.x, screen_y, self.width, PLATFORM_HEIGHT)
+        pygame.draw.rect(screen, color, rect)
+        pygame.draw.rect(screen, WHITE, rect, 2)
+        
+        # Дополнительные эффекты для пружин
+        if self.platform_type == PlatformType.SPRING:
+            # Рисуем спираль пружины
+            center_x = self.x + self.width // 2
+            center_y = screen_y + PLATFORM_HEIGHT // 2
+            spring_height = 6 - self.spring_animation
+            
+            for i in range(3):
+                offset_y = (i - 1) * spring_height
+                pygame.draw.circle(screen, BLACK, (int(center_x), int(center_y + offset_y)), 2)
+
+class Collectible:
+    """Базовый класс для собираемых предметов"""
+    def __init__(self, x: float, y: float, collectible_type: str):
+        self.x = x
+        self.y = y
+        self.type = collectible_type
+        self.active = True
+        self.animation_offset = random.uniform(0, 2 * math.pi)
+        self.bob_speed = 0.1
+        self.collected = False
+    
+    def update(self):
+        # Анимация покачивания
+        self.animation_offset += self.bob_speed
+    
+    def check_collision(self, player: Player) -> bool:
+        if not self.active:
+            return False
+        
+        distance = math.sqrt((self.x - player.x)**2 + (self.y - player.y)**2)
+        collision_distance = CRYSTAL_SIZE + player.size
+        
+        if distance < collision_distance:
+            self.active = False
+            self.collected = True
+            return True
+        return False
+    
+    def draw(self, screen: pygame.Surface, camera_y: float):
+        if not self.active:
+            return
+        
+        screen_y = self.y - camera_y + math.sin(self.animation_offset) * 3
+        
+        if self.type == "crystal":
+            # Рисуем кристалл
+            points = []
+            for i in range(6):
+                angle = i * math.pi / 3 + self.animation_offset * 0.5
+                x = self.x + math.cos(angle) * CRYSTAL_SIZE
+                y = screen_y + math.sin(angle) * CRYSTAL_SIZE
+                points.append((x, y))
+            
+            pygame.draw.polygon(screen, PURPLE, points)
+            pygame.draw.polygon(screen, WHITE, points, 2)
+        
+        elif self.type == "bonus":
+            # Рисуем бонус множителя
+            pygame.draw.circle(screen, YELLOW, (int(self.x), int(screen_y)), BONUS_SIZE)
+            pygame.draw.circle(screen, RED, (int(self.x), int(screen_y)), BONUS_SIZE, 3)
+            
+            # Рисуем "x2"
+            font = pygame.font.Font(None, 20)
+            text = font.render("x2", True, BLACK)
+            text_rect = text.get_rect(center=(self.x, screen_y))
+            screen.blit(text, text_rect)
+        
+        elif self.type == "shield":
+            # Рисуем щит
+            pygame.draw.circle(screen, (255, 215, 0), (int(self.x), int(screen_y)), BONUS_SIZE)
+            pygame.draw.circle(screen, (255, 255, 255), (int(self.x), int(screen_y)), BONUS_SIZE, 3)
+            
+            # Рисуем символ щита
+            shield_points = [
+                (self.x, screen_y - BONUS_SIZE + 4),
+                (self.x - BONUS_SIZE + 6, screen_y - 2),
+                (self.x - BONUS_SIZE + 6, screen_y + 6),
+                (self.x, screen_y + BONUS_SIZE - 4),
+                (self.x + BONUS_SIZE - 6, screen_y + 6),
+                (self.x + BONUS_SIZE - 6, screen_y - 2)
             ]
-        }
+            pygame.draw.polygon(screen, (0, 100, 200), shield_points)
 
+class Camera:
+    """Система камеры с плавным следованием за игроком"""
+    def __init__(self):
+        self.y = 0
+        self.target_y = 0
+        self.smooth_factor = 0.1
+        self.max_height = 0
+    
+    def update(self, player: Player):
+        # Камера следует за игроком, но только вверх
+        target = player.y - SCREEN_HEIGHT * 0.7
+        
+        if target < self.target_y:
+            self.target_y = target
+            self.max_height = max(self.max_height, -target)
+        
+        # Плавное движение камеры
+        self.y += (self.target_y - self.y) * self.smooth_factor
 
+class ParallaxBackground:
+    """Параллакс-фон с тремя слоями"""
+    def __init__(self):
+        self.layers = [
+            {'speed': 0.2, 'color': (20, 20, 60), 'stars': self.generate_stars(50)},
+            {'speed': 0.5, 'color': (40, 40, 80), 'stars': self.generate_stars(30)},
+            {'speed': 0.8, 'color': (60, 60, 100), 'stars': self.generate_stars(20)}
+        ]
+    
+    def generate_stars(self, count: int) -> List[Tuple[int, int, int]]:
+        """Генерирует звезды для слоя"""
+        stars = []
+        for _ in range(count):
+            x = random.randint(0, SCREEN_WIDTH)
+            y = random.randint(-2000, SCREEN_HEIGHT)
+            size = random.randint(1, 3)
+            stars.append((x, y, size))
+        return stars
+    
+    def draw(self, screen: pygame.Surface, camera_y: float):
+        # Заливаем фон градиентом
+        for y in range(SCREEN_HEIGHT):
+            color_intensity = int(20 + (y / SCREEN_HEIGHT) * 40)
+            color = (color_intensity, color_intensity, color_intensity + 20)
+            pygame.draw.line(screen, color, (0, y), (SCREEN_WIDTH, y))
+        
+        # Рисуем слои звезд
+        for layer in self.layers:
+            for star_x, star_y, star_size in layer['stars']:
+                screen_y = star_y - camera_y * layer['speed']
+                
+                # Зацикливаем звезды
+                if screen_y > SCREEN_HEIGHT + 100:
+                    screen_y -= SCREEN_HEIGHT + 2000
+                elif screen_y < -100:
+                    screen_y += SCREEN_HEIGHT + 2000
+                
+                if 0 <= screen_y <= SCREEN_HEIGHT:
+                    pygame.draw.circle(screen, WHITE, (star_x, int(screen_y)), star_size)
 
-
-    # Добавляем сообщение пользователя в контекст
-    add_to_user_context(user_id, "user", message_text)
-
-
-
-
-    # Подготавливаем данные для API
-    payload = {
-        "model": model,
-        "messages": context,
-        "temperature": temperature,
-        "max_tokens": CONFIG["MAX_TOKENS"]
-    }
-
-    # Если указан thinking_budget, добавляем его в запрос
-    if thinking_budget > 0:
-        payload["thinking_budget"] = thinking_budget
-
-
-
-
-    # Выполняем запрос к API с несколькими попытками
-    for attempt in range(CONFIG["RETRY_ATTEMPTS"]):
+class GameUI:
+    """Пользовательский интерфейс игры"""
+    def __init__(self):
+        self.font_large = pygame.font.Font(None, 36)
+        self.font_medium = pygame.font.Font(None, 24)
+        self.font_small = pygame.font.Font(None, 18)
+        
+        self.score = 0
+        self.best_score = self.load_best_score()
+        self.height_meters = 0
+        self.crystals_collected = 0
+        self.multiplier = 1.0
+        self.multiplier_time = 0
+        
+    def load_best_score(self) -> int:
+        """Загружает лучший результат из файла"""
         try:
-            # Используем ThreadPoolExecutor для выполнения запроса в отдельном потоке,
-            # чтобы не блокировать основной поток и продолжать отправлять статус "печатает"
-            with ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    requests.post,
-                    f"{CONFIG['API_URL']}/chat/completions",
-                    headers={"Authorization": f"Bearer {CONFIG['API_KEY']}"},
-                    json=payload,
-                    timeout=120  # Увеличиваем таймаут для длинных задач
-                )
-
-                # Ожидаем ответа, продолжая отправлять статус "печатает"
-                while not future.done():
-                    await asyncio.sleep(0.1)
-
-                response = future.result()
-
-            response.raise_for_status()
-            data = response.json()
-
-
-
-
-            if 'choices' in data and data['choices']:
-                ai_response = data['choices'][0]['message']['content']
-
-
-
-
-                # Кэшируем ответ
-                model_cache[cache_key] = {
-                    "response": ai_response,
-                    "timestamp": time.time()
-                }
-
-
-
-
-                # Добавляем ответ в контекст пользователя
-                add_to_user_context(user_id, "assistant", ai_response)
-
-                # Останавливаем отправку статуса "печатает"
-                await stop_typing_action(user_id)
-
-                return ai_response
-
-
-
-
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP ошибка: {e}, модель: {model}, попытка {attempt+1}/{CONFIG['RETRY_ATTEMPTS']}")
-
-
-
-
-            # Если это последняя попытка, возвращаем сообщение об ошибке
-            if attempt == CONFIG["RETRY_ATTEMPTS"] - 1:
-                # Останавливаем отправку статуса "печатает"
-                await stop_typing_action(user_id)
-
-                error_message = f"❌ Ошибка при обработке запроса (HTTP {e.response.status_code}). Пожалуйста, попробуйте позже."
-                return error_message
-
-
-
-
-            # Переключаемся на другую модель
-            current_index = ALL_MODELS.index(model)
-            next_index = (current_index + 1) % len(ALL_MODELS)
-            model = ALL_MODELS[next_index]
-            payload["model"] = model
-            logger.info(f"Переключение на модель: {model}")
-
-
-
-
-            # Обновляем полезную нагрузку с новой моделью
-            continue
-
-        except requests.exceptions.Timeout:
-            logger.error(f"Таймаут при запросе к API, модель: {model}, попытка {attempt+1}/{CONFIG['RETRY_ATTEMPTS']}")
-
-            # Если это последняя попытка, возвращаем сообщение об ошибке
-            if attempt == CONFIG["RETRY_ATTEMPTS"] - 1:
-                # Останавливаем отправку статуса "печатает"
-                await stop_typing_action(user_id)
-
-                error_message = "❌ Время ожидания ответа истекло. Возможно, запрос слишком сложный. Попробуйте упростить запрос или использовать параметр --thinking_budget для увеличения времени обработки."
-                return error_message
-
-            # Пробуем еще раз
-            continue
-
-
-
-
-        except Exception as e:
-            logger.error(f"Ошибка при запросе к API: {str(e)}")
-
-            # Останавливаем отправку статуса "печатает"
-            await stop_typing_action(user_id)
-
-            return f"❌ Произошла ошибка: {str(e)[:100]}... Пожалуйста, попробуйте позже."
-
-
-
-
-    # Если все попытки не удались
-    # Останавливаем отправку статуса "печатает"
-    await stop_typing_action(user_id)
-
-    return "❌ Все модели временно недоступны. Пожалуйста, попробуйте позже."
-
-
-
-
-# Обработчики команд и сообщений
-@router.message(CommandStart())
-async def cmd_start(message: Message):
-    """Обработчик команды /start."""
-    user_name = message.from_user.first_name
-
-
-
-
-    # Создаем клавиатуру быстрого доступа
-    keyboard = ReplyKeyboardBuilder()
-    keyboard.add(KeyboardButton(text="🔄 Новый диалог"))
-    keyboard.add(KeyboardButton(text="🤖 Выбрать модель"))
-    keyboard.add(KeyboardButton(text="📜 История диалогов"))
-    keyboard.add(KeyboardButton(text="⚙️ Настройки"))
-    keyboard.adjust(2)
-
-
-
-
-    welcome_text = (
-        f"👋 Здравствуйте, {user_name}!\n\n"
-        f"🤖 Я профессиональный AI-ассистент, работающий на основе передовых языковых моделей.\n\n"
-        f"🔍 Я могу помочь вам с:\n"
-        f"• Ответами на вопросы и объяснениями\n"
-        f"• Написанием и анализом кода\n"
-        f"• Созданием и редактированием текстов\n"
-        f"• Анализом данных и рассуждениями\n\n"
-        f"💡 Просто напишите ваш вопрос или задачу, и я постараюсь помочь!\n\n"
-        f"🔤 Для быстрой смены модели, добавьте `--model название` в ваше сообщение."
-    )
-
-
-
-
-    await message.answer(
-        welcome_text,
-        reply_markup=keyboard.as_markup(resize_keyboard=True)
-    )
-
-
-
-
-    # Инициализируем настройки пользователя, если их еще нет
-    user_id = message.from_user.id
-    if str(user_id) not in user_settings:
-        user_settings[str(user_id)] = {
-            "model": ALL_MODELS[0],
-            "system_prompt": CONFIG["DEFAULT_SYSTEM_PROMPT"],
-            "temperature": CONFIG["TEMPERATURE"],
-            "thinking_budget": 0,
-            "favorite_models": [],
-            "requests_left": 10,
-            "last_reset": str(date.today())
-        }
-        save_user_settings()
-
-
-@router.message(Command("history"))
-async def cmd_history(message: Message, state: FSMContext):
-    """Показывает историю диалогов пользователя."""
-    user_id = message.from_user.id
-
-    # Устанавливаем состояние просмотра истории
-    await state.set_state(UserStates.viewing_history)
-
-    # Получаем и форматируем первую страницу истории
-    history_text, current_page, total_pages = await format_history_page(user_id)
-
-    # Создаем клавиатуру навигации
-    keyboard = await create_history_navigation_keyboard(current_page, total_pages)
-
-    await message.answer(
-        history_text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=keyboard
-    )
-
-
-
-
-@router.message(Command("help"))
-async def cmd_help(message: Message):
-    """Показывает справку по командам бота."""
-    help_text = (
-        "🔍 **Справка по командам:**\n\n"
-        "/start - Начать общение с ботом\n"
-        "/newchat - Начать новый диалог\n"
-        "/models - Выбрать AI модель\n"
-        "/prompt - Настроить системный промпт\n"
-        "/resetprompt - Сбросить системный промпт\n"
-        "/temp - Настроить креативность (temperature)\n"
-        "/thinking - Настроить бюджет размышлений для сложных задач\n"
-        "/history - Просмотр истории диалогов\n"
-        "/settings - Показать текущие настройки\n"
-        "/help - Показать эту справку\n\n"
-        "📝 **Дополнительные параметры в сообщениях:**\n"
-        "Можно добавить параметры в сообщение для быстрой настройки:\n"
-        "• `--model название` - Использовать указанную модель для этого запроса\n"
-        "• `--thinking_budget N` - Использовать бюджет размышлений для сложного запроса\n\n"
-        "Примеры:\n"
-        "• `Расскажи о квантовой физике --model Llama-3.3-70B-Instruct`\n"
-        "• `Реши сложную математическую задачу... --thinking_budget 8192`\n\n"
-        "📝 **Форматирование:**\n"
-        "Бот поддерживает Markdown для кода и текста:\n"
-        "```\n# Заголовок\n**жирный текст**\n*курсив*\n`код`\n```\n"
-        "📊 **Отправка изображений:**\n"
-        "Вы можете отправить изображение с подписью, и я проанализирую его содержимое."
-    )
-
-
-
-
-    await message.answer(help_text, parse_mode=ParseMode.MARKDOWN)
-
-
-
-
-@router.message(Command("settings"))
-async def cmd_settings(message: Message):
-    """Показывает текущие настройки пользователя."""
-    user_id = message.from_user.id
-
-
-
-
-    if str(user_id) not in user_settings:
-        user_settings[str(user_id)] = {
-            "model": ALL_MODELS[0],
-            "system_prompt": CONFIG["DEFAULT_SYSTEM_PROMPT"],
-            "temperature": CONFIG["TEMPERATURE"],
-            "thinking_budget": 0,
-            "favorite_models": [],
-            "requests_left": 10,
-            "last_reset": str(date.today())
-        }
-        save_user_settings()
-
-
-
-
-    settings = user_settings[str(user_id)]
-    model = settings.get("model", ALL_MODELS[0])
-    system_prompt = settings.get("system_prompt", CONFIG["DEFAULT_SYSTEM_PROMPT"])
-    temperature = settings.get("temperature", CONFIG["TEMPERATURE"])
-    thinking_budget = settings.get("thinking_budget", 0)
-    favorite_models = settings.get("favorite_models", [])
-
-
-
-
-    # Создаем клавиатуру для настроек
-    keyboard = InlineKeyboardBuilder()
-    keyboard.row(InlineKeyboardButton(text="🔄 Сменить модель", callback_data="change_model"))
-    keyboard.row(InlineKeyboardButton(text="📝 Изменить системный промпт", callback_data="change_prompt"))
-    keyboard.row(InlineKeyboardButton(text="🎛️ Настроить креативность", callback_data="change_temp"))
-    keyboard.row(InlineKeyboardButton(text="🧠 Настроить бюджет размышлений", callback_data="change_thinking"))
-    keyboard.row(InlineKeyboardButton(text="📜 История диалогов", callback_data="view_history"))
-    keyboard.row(InlineKeyboardButton(text="🔄 Начать новый диалог", callback_data="new_chat"))
-
-
-    thinking_budget_text = "Выключен" if thinking_budget == 0 else str(thinking_budget)
-    favorite_models_text = "\n".join([f"• {format_model_name(m)}" for m in favorite_models]) if favorite_models else "Нет избранных моделей"
-
-    settings_text = (
-        "⚙️ **Текущие настройки:**\n\n"
-        f"🤖 **Модель:** `{format_model_name(model)}`\n\n"
-        f"🌡️ **Креативность:** `{temperature}`\n\n"
-        f"🧠 **Бюджет размышлений:** `{thinking_budget_text}`\n\n"
-        f"⭐ **Избранные модели:**\n```\n{favorite_models_text}\n```\n\n"
-        f"📝 **Системный промпт:**\n```\n{system_prompt}\n```"
-    )
-
-
-
-
-    await message.answer(settings_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard.as_markup())
-
-
-
-
-@router.message(Command("models"))
-async def cmd_models(message: Message, state: FSMContext):
-    """Показывает список доступных моделей."""
-    await state.set_state(UserStates.waiting_for_model_selection)
-
-
-
-
-    await message.answer(
-        "📚 Выберите категорию моделей:",
-        reply_markup=await create_model_selection_keyboard()
-    )
-
-
-@router.message(Command("thinking"))
-async def cmd_thinking(message: Message, state: FSMContext):
-    """Позволяет пользователю настроить параметр thinking_budget."""
-    await state.set_state(UserStates.waiting_for_thinking_budget)
-
-    current_budget = get_user_thinking_budget(message.from_user.id)
-    current_budget_text = "Выключен" if current_budget == 0 else str(current_budget)
-
-    await message.answer(
-        f"🧠 Текущий бюджет размышлений: **{current_budget_text}**\n\n"
-        "Бюджет размышлений позволяет моделям лучше справляться со сложными задачами, "
-        "давая им больше «пространства» для промежуточных вычислений и рассуждений.\n\n"
-        "Чем сложнее задача (например, сложные математические вычисления, программирование или логические головоломки), "
-        "тем больший бюджет может потребоваться. Однако это может увеличить время генерации ответа.\n\n"
-        "Выберите желаемый бюджет размышлений:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=await create_thinking_budget_keyboard()
-    )
-
-
-
-
-@router.message(Command("prompt"))
-async def cmd_prompt(message: Message, state: FSMContext):
-    """Позволяет пользователю задать свой системный промпт."""
-    await state.set_state(UserStates.custom_system_prompt)
-
-
-
-
-    current_prompt = get_system_prompt(message.from_user.id)
-
-
-
-
-    await message.answer(
-        f"📝 Текущий системный промпт:\n```\n{current_prompt}\n```\n\n"
-        "Отправьте новый системный промпт, который будет использоваться в диалоге. "
-        "Это инструкции для AI о том, как ему следует отвечать.",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-
-
-
-@router.message(Command("resetprompt"))
-async def cmd_reset_prompt(message: Message):
-    """Сбрасывает системный промпт на значение по умолчанию."""
-    user_id = message.from_user.id
-
-
-
-
-    if str(user_id) in user_settings:
-        user_settings[str(user_id)]["system_prompt"] = CONFIG["DEFAULT_SYSTEM_PROMPT"]
-        save_user_settings()
-
-
-
-
-    # Обновляем контекст пользователя, если он существует
-    if user_id in user_contexts:
-        # Ищем и обновляем системное сообщение
-        for i, msg in enumerate(user_contexts[user_id]):
-            if msg["role"] == "system":
-                user_contexts[user_id][i]["content"] = CONFIG["DEFAULT_SYSTEM_PROMPT"]
-                break
-        # Если системного сообщения нет, добавляем его
+            if os.path.exists("best_score.json"):
+                with open("best_score.json", "r") as f:
+                    data = json.load(f)
+                    return data.get("best_score", 0)
+        except:
+            pass
+        return 0
+    
+    def save_best_score(self):
+        """Сохраняет лучший результат в файл"""
+        try:
+            with open("best_score.json", "w") as f:
+                json.dump({"best_score": self.best_score}, f)
+        except:
+            pass
+    
+    def add_score(self, points: int):
+        """Добавляет очки с учетом множителя"""
+        self.score += int(points * self.multiplier)
+        if self.score > self.best_score:
+            self.best_score = self.score
+    
+    def activate_multiplier(self):
+        """Активирует множитель очков"""
+        self.multiplier = 2.0
+        self.multiplier_time = 600  # 10 секунд при 60 FPS
+    
+    def update(self, player_y: float):
+        # Обновляем высоту в метрах
+        self.height_meters = max(0, int(-player_y / 50))
+        
+        # Обновляем множитель
+        if self.multiplier_time > 0:
+            self.multiplier_time -= 1
+            if self.multiplier_time <= 0:
+                self.multiplier = 1.0
+    
+    def draw(self, screen: pygame.Surface):
+        # Верхняя панель с полупрозрачным фоном
+        panel_rect = pygame.Rect(0, 0, SCREEN_WIDTH, 80)
+        panel_surface = pygame.Surface((SCREEN_WIDTH, 80))
+        panel_surface.set_alpha(180)
+        panel_surface.fill(BLACK)
+        screen.blit(panel_surface, (0, 0))
+        
+        # Текущие очки
+        score_text = self.font_medium.render(f"Очки: {self.score}", True, WHITE)
+        screen.blit(score_text, (10, 10))
+        
+        # Лучший результат
+        best_text = self.font_small.render(f"Лучший: {self.best_score}", True, GRAY)
+        screen.blit(best_text, (SCREEN_WIDTH - 120, 10))
+        
+        # Высота
+        height_text = self.font_small.render(f"Высота: {self.height_meters}м", True, WHITE)
+        screen.blit(height_text, (10, 35))
+        
+        # Кристаллы
+        crystals_text = self.font_small.render(f"Кристаллы: {self.crystals_collected}", True, PURPLE)
+        screen.blit(crystals_text, (10, 55))
+        
+        # Множитель
+        if self.multiplier > 1.0:
+            mult_text = self.font_medium.render(f"x{self.multiplier:.1f}", True, YELLOW)
+            mult_rect = mult_text.get_rect(center=(SCREEN_WIDTH - 60, 45))
+            
+            # Мигающий эффект
+            if self.multiplier_time < 120 and (self.multiplier_time // 10) % 2:
+                pass  # Не рисуем для мигания
+            else:
+                screen.blit(mult_text, mult_rect)
+
+class TouchControls:
+    """Система управления, адаптированная под мобильные устройства"""
+    def __init__(self):
+        self.touch_start_time = 0
+        self.is_touching = False
+        self.touch_start_pos = (0, 0)
+        self.swipe_threshold = 30
+        self.long_press_threshold = 300  # миллисекунды
+    
+    def handle_touch_start(self, pos: Tuple[int, int]):
+        """Обрабатывает начало касания"""
+        self.is_touching = True
+        self.touch_start_time = pygame.time.get_ticks()
+        self.touch_start_pos = pos
+    
+    def handle_touch_end(self, pos: Tuple[int, int], player: Player) -> List[Particle]:
+        """Обрабатывает окончание касания"""
+        if not self.is_touching:
+            return []
+        
+        particles = []
+        touch_duration = pygame.time.get_ticks() - self.touch_start_time
+        
+        # Проверяем на свайп
+        dx = pos[0] - self.touch_start_pos[0]
+        dy = pos[1] - self.touch_start_pos[1]
+        
+        if abs(dx) > self.swipe_threshold and abs(dx) > abs(dy):
+            # Горизонтальный свайп - движение в воздухе
+            direction = 1 if dx > 0 else -1
+            player.move_horizontal(direction * 3)
         else:
-            user_contexts[user_id].insert(0, {"role": "system", "content": CONFIG["DEFAULT_SYSTEM_PROMPT"]})
-
-
-
-
-    await message.answer(
-        "✅ Системный промпт сброшен на значение по умолчанию.",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-
-
-
-@router.message(Command("temp"))
-async def cmd_temperature(message: Message, state: FSMContext):
-    """Позволяет пользователю настроить параметр temperature."""
-    await state.set_state(UserStates.waiting_for_temperature)
-
-
-
-
-    current_temp = get_user_temperature(message.from_user.id)
-
-
-
-
-    await message.answer(
-        f"🌡️ Текущее значение креативности (temperature): **{current_temp}**\n\n"
-        "Более низкие значения делают ответы более предсказуемыми и точными, "
-        "более высокие значения делают ответы более творческими и разнообразными.\n\n"
-        "Выберите желаемый уровень креативности:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=await create_temperature_keyboard()
-    )
-
-
-
-
-@router.message(Command("newchat"))
-async def cmd_new_chat(message: Message):
-    """Начинает новый диалог, очищая историю контекста."""
-    user_id = message.from_user.id
-    clear_user_context(user_id)
-
-
-
-
-    # Добавляем системный промпт в начало нового диалога
-    system_prompt = get_system_prompt(user_id)
-    add_to_user_context(user_id, "system", system_prompt)
-
-
-
-
-    await message.answer(
-        "🔄 Начат новый диалог. Вся предыдущая история очищена.\n"
-        "Задайте мне вопрос или опишите, с чем я могу вам помочь."
-    )
-
-
-
-
-@router.callback_query(lambda c: c.data == "new_chat")
-async def callback_new_chat(callback: CallbackQuery):
-    """Обработчик кнопки "Новый диалог"."""
-    user_id = callback.from_user.id
-    clear_user_context(user_id)
-
-
-
-
-    # Добавляем системный промпт в начало нового диалога
-    system_prompt = get_system_prompt(user_id)
-    add_to_user_context(user_id, "system", system_prompt)
-
-
-
-
-    await callback.message.answer(
-        "🔄 Начат новый диалог. Вся предыдущая история очищена.\n"
-        "Задайте мне вопрос или опишите, с чем я могу вам помочь."
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data == "view_history")
-async def callback_view_history(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки просмотра истории диалогов."""
-    user_id = callback.from_user.id
-
-    # Устанавливаем состояние просмотра истории
-    await state.set_state(UserStates.viewing_history)
-
-    # Получаем и форматируем первую страницу истории
-    history_text, current_page, total_pages = await format_history_page(user_id)
-
-    # Создаем клавиатуру навигации
-    keyboard = await create_history_navigation_keyboard(current_page, total_pages)
-
-    await callback.message.answer(
-        history_text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=keyboard
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data.startswith("history:"))
-async def callback_history_navigation(callback: CallbackQuery):
-    """Обработчик навигации по истории диалогов."""
-    user_id = callback.from_user.id
-    page = int(callback.data.split(":", 1)[1])
-
-    # Получаем и форматируем запрошенную страницу истории
-    history_text, current_page, total_pages = await format_history_page(user_id, page)
-
-    # Создаем клавиатуру навигации
-    keyboard = await create_history_navigation_keyboard(current_page, total_pages)
-
-    await callback.message.edit_text(
-        history_text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=keyboard
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data == "close_history")
-async def callback_close_history(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки закрытия истории диалогов."""
-    # Сбрасываем состояние
-    await state.clear()
-
-    await callback.message.edit_text(
-        "📜 Просмотр истории диалогов завершен."
-    )
-    await callback.answer()
-
-
-
-
-@router.callback_query(lambda c: c.data == "change_model")
-async def callback_change_model(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки смены модели."""
-    await state.set_state(UserStates.waiting_for_model_selection)
-
-
-
-
-    await callback.message.answer(
-        "📚 Выберите категорию моделей:",
-        reply_markup=await create_model_selection_keyboard()
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data == "search_model")
-async def callback_search_model(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки поиска модели."""
-    await state.set_state(UserStates.waiting_for_model_search)
-
-    await callback.message.answer(
-        "🔍 Введите часть названия модели для поиска:"
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data == "direct_model")
-async def callback_direct_model(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки прямого ввода названия модели."""
-    await state.set_state(UserStates.waiting_for_direct_model)
-
-    await callback.message.answer(
-        "⌨️ Введите точное название модели (например, Llama-3.3-70B-Instruct):"
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data == "favorite_models")
-async def callback_favorite_models(callback: CallbackQuery):
-    """Обработчик кнопки просмотра избранных моделей."""
-    user_id = callback.from_user.id
-
-    await callback.message.edit_text(
-        "⭐ Ваши избранные модели:",
-        reply_markup=await create_favorite_models_keyboard(user_id)
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data == "all_models")
-async def callback_all_models(callback: CallbackQuery):
-    """Обработчик кнопки показа всех моделей."""
-    await callback.message.edit_text(
-        "📋 Выберите модель из полного списка:",
-        reply_markup=await create_all_models_keyboard()
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data.startswith("favorite:"))
-async def callback_add_favorite(callback: CallbackQuery):
-    """Обработчик добавления модели в избранное."""
-    user_id = callback.from_user.id
-    model = callback.data.split(":", 1)[1]
-
-    add_to_favorite_models(user_id, model)
-
-    await callback.answer("✅ Модель добавлена в избранное")
-
-    # Обновляем клавиатуру действий с моделью
-    await callback.message.edit_reply_markup(
-        reply_markup=await create_model_actions_keyboard(model, user_id)
-    )
-
-
-@router.callback_query(lambda c: c.data.startswith("unfavorite:"))
-async def callback_remove_favorite(callback: CallbackQuery):
-    """Обработчик удаления модели из избранного."""
-    user_id = callback.from_user.id
-    model = callback.data.split(":", 1)[1]
-
-    remove_from_favorite_models(user_id, model)
-
-    await callback.answer("✅ Модель удалена из избранного")
-
-    # Обновляем клавиатуру действий с моделью
-    await callback.message.edit_reply_markup(
-        reply_markup=await create_model_actions_keyboard(model, user_id)
-    )
-
-
-@router.message(StateFilter(UserStates.waiting_for_model_search))
-async def process_model_search(message: Message, state: FSMContext):
-    """Обрабатывает поиск модели по запросу."""
-    search_query = message.text.strip()
-
-    if len(search_query) < 2:
-        await message.answer(
-            "⚠️ Запрос слишком короткий. Введите минимум 2 символа для поиска."
-        )
-        return
-
-    # Ищем модели по запросу
-    search_results = search_models(search_query)
-
-    if not search_results:
-        await message.answer(
-            f"🔍 По запросу «{search_query}» не найдено моделей. Попробуйте другой запрос или выберите из категорий:",
-            reply_markup=await create_model_selection_keyboard()
-        )
-    else:
-        await message.answer(
-            f"🔍 Результаты поиска по запросу «{search_query}»:",
-            reply_markup=await create_search_results_keyboard(search_results)
-        )
-
-    # Сбрасываем состояние
-    await state.clear()
-
-
-@router.message(StateFilter(UserStates.waiting_for_direct_model))
-async def process_direct_model(message: Message, state: FSMContext):
-    """Обрабатывает прямой ввод названия модели."""
-    model_query = message.text.strip()
-
-    # Ищем модель по запросу
-    matching_models = []
-    for model in ALL_MODELS:
-        if model_query.lower() in model.lower():
-            matching_models.append(model)
-
-    if not matching_models:
-        await message.answer(
-            f"❌ Модель с названием «{model_query}» не найдена. Попробуйте другое название или выберите из списка:",
-            reply_markup=await create_model_selection_keyboard()
-        )
-    else:
-        # Если нашли несколько моделей, показываем список
-        if len(matching_models) > 1:
-            await message.answer(
-                f"🔍 Найдено несколько моделей по запросу «{model_query}». Выберите одну из них:",
-                reply_markup=await create_search_results_keyboard(matching_models)
-            )
-        else:
-            # Если нашли только одну модель, предлагаем действия с ней
-            model = matching_models[0]
-            await message.answer(
-                f"📝 Информация о модели: **{format_model_name(model)}**\n\n"
-                f"Выберите действие с этой моделью:",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=await create_model_actions_keyboard(model, message.from_user.id)
-            )
-
-    # Сбрасываем состояние
-    await state.clear()
-
-
-@router.callback_query(lambda c: c.data.startswith("select_model:"))
-async def callback_select_actual_model(callback: CallbackQuery, state: FSMContext):
-    """Обработчик выбора модели для использования."""
-    user_id = callback.from_user.id
-    model = callback.data.split(":", 1)[1]
-
-    # Сохраняем выбранную модель в настройках пользователя
-    if str(user_id) not in user_settings:
-        user_settings[str(user_id)] = {
-            "system_prompt": CONFIG["DEFAULT_SYSTEM_PROMPT"],
-            "temperature": CONFIG["TEMPERATURE"],
-            "thinking_budget": 0,
-            "favorite_models": []
-        }
-
-    user_settings[str(user_id)]["model"] = model
-    save_user_settings()
-
-    # Возвращаемся к нормальному состоянию
-    await state.clear()
-
-    # Обновляем текст сообщения
-    await callback.message.edit_text(
-        f"✅ Модель успешно изменена на: **{format_model_name(model)}**\n\n"
-        "Теперь вы можете задать мне любой вопрос!",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await callback.answer("Модель установлена!")
-
-
-
-
-@router.callback_query(lambda c: c.data == "change_prompt")
-async def callback_change_prompt(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки изменения системного промпта."""
-    await state.set_state(UserStates.custom_system_prompt)
-
-
-
-
-    current_prompt = get_system_prompt(callback.from_user.id)
-
-
-
-
-    await callback.message.answer(
-        f"📝 Текущий системный промпт:\n```\n{current_prompt}\n```\n\n"
-        "Отправьте новый системный промпт, который будет использоваться в диалоге. "
-        "Это инструкции для AI о том, как ему следует отвечать.",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await callback.answer()
-
-
-@router.callback_query(lambda c: c.data == "change_thinking")
-async def callback_change_thinking(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки изменения бюджета размышлений."""
-    await state.set_state(UserStates.waiting_for_thinking_budget)
-
-    current_budget = get_user_thinking_budget(callback.from_user.id)
-    current_budget_text = "Выключен" if current_budget == 0 else str(current_budget)
-
-    await callback.message.answer(
-        f"🧠 Текущий бюджет размышлений: **{current_budget_text}**\n\n"
-        "Бюджет размышлений позволяет моделям лучше справляться со сложными задачами, "
-        "давая им больше «пространства» для промежуточных вычислений и рассуждений.\n\n"
-        "Чем сложнее задача (например, сложные математические вычисления, программирование или логические головоломки), "
-        "тем больший бюджет может потребоваться. Однако это может увеличить время генерации ответа.\n\n"
-        "Выберите желаемый бюджет размышлений:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=await create_thinking_budget_keyboard()
-    )
-    await callback.answer()
-
-
-
-
-@router.callback_query(lambda c: c.data == "change_temp")
-async def callback_change_temp(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки изменения температуры."""
-    await state.set_state(UserStates.waiting_for_temperature)
-
-
-
-
-    current_temp = get_user_temperature(callback.from_user.id)
-
-
-
-
-    await callback.message.answer(
-        f"🌡️ Текущее значение креативности (temperature): **{current_temp}**\n\n"
-        "Более низкие значения делают ответы более предсказуемыми и точными, "
-        "более высокие значения делают ответы более творческими и разнообразными.\n\n"
-        "Выберите желаемый уровень креативности:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=await create_temperature_keyboard()
-    )
-    await callback.answer()
-
-
-
-
-@router.callback_query(lambda c: c.data.startswith("category:"))
-async def callback_select_category(callback: CallbackQuery):
-    """Обработчик выбора категории моделей."""
-    category = callback.data.split(":", 1)[1]
-
-
-
-
-    await callback.message.edit_text(
-        f"📚 Выберите модель из категории «{category}»:",
-        reply_markup=await create_category_models_keyboard(category)
-    )
-    await callback.answer()
-
-
-
-
-@router.callback_query(lambda c: c.data == "back_to_categories")
-async def callback_back_to_categories(callback: CallbackQuery):
-    """Обработчик кнопки "Назад к категориям"."""
-    await callback.message.edit_text(
-        "📚 Выберите категорию моделей:",
-        reply_markup=await create_model_selection_keyboard()
-    )
-    await callback.answer()
-
-
-
-
-@router.callback_query(lambda c: c.data.startswith("model:"))
-async def callback_select_model(callback: CallbackQuery, state: FSMContext):
-    """Обработчик выбора модели."""
-    user_id = callback.from_user.id
-    model = callback.data.split(":", 1)[1]
-
-    # Показываем информацию о модели и действия с ней
-    await callback.message.edit_text(
-        f"📝 Информация о модели: **{format_model_name(model)}**\n\n"
-        f"Выберите действие с этой моделью:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=await create_model_actions_keyboard(model, user_id)
-    )
-    await callback.answer()
-
-
-
-
-@router.callback_query(lambda c: c.data.startswith("temp:"))
-async def callback_select_temperature(callback: CallbackQuery, state: FSMContext):
-    """Обработчик выбора значения temperature."""
-    user_id = callback.from_user.id
-    temperature = float(callback.data.split(":", 1)[1])
-
-
-
-
-    # Сохраняем выбранное значение temperature
-    if str(user_id) not in user_settings:
-        user_settings[str(user_id)] = {
-            "model": ALL_MODELS[0],
-            "system_prompt": CONFIG["DEFAULT_SYSTEM_PROMPT"],
-            "thinking_budget": 0,
-            "favorite_models": []
-        }
-
-
-
-
-    user_settings[str(user_id)]["temperature"] = temperature
-    save_user_settings()
-
-
-
-
-    # Возвращаемся к нормальному состоянию
-    await state.clear()
-
-
-
-
-    await callback.message.edit_text(
-        f"✅ Значение креативности успешно изменено на: **{temperature}**\n\n"
-        "Теперь вы можете продолжить диалог!",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await callback.answer("Настройка сохранена!")
-
-
-@router.callback_query(lambda c: c.data.startswith("think:"))
-async def callback_select_thinking_budget(callback: CallbackQuery, state: FSMContext):
-    """Обработчик выбора значения thinking_budget."""
-    user_id = callback.from_user.id
-    thinking_budget = int(callback.data.split(":", 1)[1])
-
-    # Сохраняем выбранное значение thinking_budget
-    if str(user_id) not in user_settings:
-        user_settings[str(user_id)] = {
-            "model": ALL_MODELS[0],
-            "system_prompt": CONFIG["DEFAULT_SYSTEM_PROMPT"],
-            "temperature": CONFIG["TEMPERATURE"],
-            "favorite_models": []
-        }
-
-    user_settings[str(user_id)]["thinking_budget"] = thinking_budget
-    save_user_settings()
-
-    # Возвращаемся к нормальному состоянию
-    await state.clear()
-
-    thinking_budget_text = "выключен" if thinking_budget == 0 else str(thinking_budget)
-
-    await callback.message.edit_text(
-        f"✅ Бюджет размышлений успешно изменен на: **{thinking_budget_text}**\n\n"
-        "Теперь вы можете продолжить диалог!",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await callback.answer("Настройка сохранена!")
-
-
-@router.callback_query(lambda c: c.data == "no_action")
-async def callback_no_action(callback: CallbackQuery):
-    """Обработчик пустой кнопки без действия."""
-    await callback.answer("Нет доступных действий")
-
-
-
-
-@router.message(StateFilter(UserStates.custom_system_prompt))
-async def process_custom_prompt(message: Message, state: FSMContext):
-    """Обрабатывает ввод пользовательского системного промпта."""
-    user_id = message.from_user.id
-    new_prompt = message.text
-
-
-
-
-    # Проверяем, что промпт не пустой
-    if not new_prompt or len(new_prompt) < 5:
-        await message.answer(
-            "❌ Промпт слишком короткий. Пожалуйста, введите более подробный системный промпт."
-        )
-        return
-
-
-
-
-    # Сохраняем промпт в настройках
-    if str(user_id) not in user_settings:
-        user_settings[str(user_id)] = {
-            "model": ALL_MODELS[0],
-            "temperature": CONFIG["TEMPERATURE"],
-            "thinking_budget": 0,
-            "favorite_models": []
-        }
-
-
-
-
-    user_settings[str(user_id)]["system_prompt"] = new_prompt
-    save_user_settings()
-
-
-
-
-    # Обновляем контекст пользователя
-    if user_id in user_contexts:
-        # Ищем и обновляем системное сообщение
-        for i, msg in enumerate(user_contexts[user_id]):
-            if msg["role"] == "system":
-                user_contexts[user_id][i]["content"] = new_prompt
-                break
-        # Если системного сообщения нет, добавляем его
-        else:
-            user_contexts[user_id].insert(0, {"role": "system", "content": new_prompt})
-    else:
-        # Создаем новый контекст с системным промптом
-        user_contexts[user_id] = [{"role": "system", "content": new_prompt}]
-
-
-
-
-    # Возвращаемся к нормальному состоянию
-    await state.clear()
-
-
-
-
-    await message.answer(
-        "✅ Системный промпт успешно изменен!\n\n"
-        "Теперь вы можете продолжить диалог с учетом новых инструкций."
-    )
-
-
-
-
-@router.message(F.text == "🔄 Новый диалог")
-async def handle_new_chat_button(message: Message):
-    """Обработчик кнопки "Новый диалог" на клавиатуре."""
-    user_id = message.from_user.id
-    clear_user_context(user_id)
-
-
-
-
-    # Добавляем системный промпт в начало нового диалога
-    system_prompt = get_system_prompt(user_id)
-    add_to_user_context(user_id, "system", system_prompt)
-
-
-
-
-    await message.answer(
-        "🔄 Начат новый диалог. Вся предыдущая история очищена.\n"
-        "Задайте мне вопрос или опишите, с чем я могу вам помочь."
-    )
-
-
-@router.message(F.text == "📜 История диалогов")
-async def handle_history_button(message: Message, state: FSMContext):
-    """Обработчик кнопки "История диалогов" на клавиатуре."""
-    # Просто вызываем существующий обработчик команды /history
-    await cmd_history(message, state)
-
-
-@router.message(F.text == "🤖 Выбрать модель")
-async def handle_models_button(message: Message, state: FSMContext):
-    """Обработчик кнопки "Выбрать модель" на клавиатуре."""
-    # Просто вызываем существующий обработчик команды /models
-    await cmd_models(message, state)
-
-
-@router.message(F.text == "⚙️ Настройки")
-async def handle_settings_button(message: Message):
-    """Обработчик кнопки "Настройки" на клавиатуре."""
-    # Просто вызываем существующий обработчик команды /settings
-    await cmd_settings(message)
-
-
-
-
-@router.message(F.photo)
-async def handle_photo(message: Message):
-    """Обрабатывает сообщения с фотографиями."""
-    user_id = message.from_user.id
-
-
-
-
-    # Получаем фото наилучшего качества
-    photo = message.photo[-1]
-
-
-
-
-    # Получаем подпись к фото или используем дефолтный текст
-    caption = message.caption or "Что на этом изображении?"
-
-
-
-
-    # Проверяем, поддерживает ли текущая модель анализ изображений
-    current_model = get_user_model(user_id)
-    supports_vision = any(vision_model in current_model for vision_model in ["Vision", "VL", "vision"])
-
-
-
-
-    if not supports_vision:
-        # Автоматически переключимся на модель с поддержкой изображений
-        vision_models = MODEL_CATEGORIES["С возможностью анализа изображений"]
-        if vision_models:
-            new_model = vision_models[0]
-
-
-
-
-            # Сохраняем предыдущую модель для возврата
-            if str(user_id) not in user_settings:
-                user_settings[str(user_id)] = {
-                    "system_prompt": CONFIG["DEFAULT_SYSTEM_PROMPT"],
-                    "temperature": CONFIG["TEMPERATURE"],
-                    "thinking_budget": 0,
-                    "favorite_models": []
-                }
-
-
-
-
-            # Запоминаем предыдущую модель
-            previous_model = user_settings[str(user_id)].get("model", ALL_MODELS[0])
-            user_settings[str(user_id)]["previous_model"] = previous_model
-
-
-
-
-            # Устанавливаем модель с поддержкой изображений
-            user_settings[str(user_id)]["model"] = new_model
-            save_user_settings()
-
-
-
-
-            await message.answer(
-                f"🔄 Временно переключаюсь на модель с поддержкой анализа изображений: "
-                f"**{format_model_name(new_model)}**",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        else:
-            await message.answer(
-                "❌ Текущая модель не поддерживает анализ изображений, и нет доступных моделей с такой функциональностью."
-            )
+            # Тап или долгое нажатие - прыжок
+            charge_time = min(touch_duration, player.max_jump_charge * 10)  # Конвертируем в условные единицы
+            particles = player.jump(charge_time)
+        
+        self.is_touching = False
+        return particles
+    
+    def get_jump_charge_visual(self) -> float:
+        """Возвращает визуальный индикатор зарядки прыжка"""
+        if not self.is_touching:
+            return 0.0
+        
+        charge_time = pygame.time.get_ticks() - self.touch_start_time
+        return min(1.0, charge_time / (30 * 10))  # Нормализуем к 0-1
+
+class PlatformGenerator:
+    """Генератор платформ"""
+    def __init__(self):
+        self.last_platform_y = SCREEN_HEIGHT - 100
+        self.platform_count = 0
+    
+    def generate_platforms(self, target_y: float, existing_platforms: List[Platform]) -> List[Platform]:
+        """Генерирует платформы до указанной высоты"""
+        new_platforms = []
+        
+        while self.last_platform_y > target_y:
+            self.last_platform_y -= PLATFORM_SPACING_Y + random.randint(-20, 20)
+            
+            # Определяем тип платформы
+            rand = random.random()
+            if rand < 0.6:  # 60% обычные
+                platform_type = PlatformType.NORMAL
+            elif rand < 0.85:  # 25% движущиеся
+                platform_type = PlatformType.MOVING
+            elif rand < 0.98:  # 13% хрупкие
+                platform_type = PlatformType.FRAGILE
+            else:  # 2% пружины
+                platform_type = PlatformType.SPRING
+            
+            # Размеры и позиция платформы
+            width = random.randint(MIN_PLATFORM_WIDTH, MAX_PLATFORM_WIDTH)
+            x = random.randint(0, SCREEN_WIDTH - width)
+            
+            platform = Platform(x, self.last_platform_y, width, platform_type)
+            new_platforms.append(platform)
+            self.platform_count += 1
+        
+        return new_platforms
+
+class CollectibleGenerator:
+    """Генератор собираемых предметов"""
+    def __init__(self):
+        pass
+    
+    def generate_for_platform(self, platform: Platform) -> List[Collectible]:
+        """Генерирует предметы для платформы"""
+        collectibles = []
+        
+        # Кристаллы появляются часто
+        if random.random() < 0.4:
+            x = platform.x + platform.width // 2
+            y = platform.y - 30
+            collectibles.append(Collectible(x, y, "crystal"))
+        
+        # Бонусы появляются редко
+        if random.random() < 0.05:
+            x = platform.x + platform.width // 2
+            y = platform.y - 30
+            collectibles.append(Collectible(x, y, "bonus"))
+        
+        # Щиты появляются очень редко
+        if random.random() < 0.02:
+            x = platform.x + platform.width // 2
+            y = platform.y - 30
+            collectibles.append(Collectible(x, y, "shield"))
+        
+        return collectibles
+
+class GravityHopper:
+    """Основной класс игры"""
+    def __init__(self):
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Gravity Hopper")
+        self.clock = pygame.time.Clock()
+        
+        # Игровые объекты
+        self.player = Player(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 150)
+        self.camera = Camera()
+        self.background = ParallaxBackground()
+        self.ui = GameUI()
+        self.controls = TouchControls()
+        self.platform_generator = PlatformGenerator()
+        self.collectible_generator = CollectibleGenerator()
+        
+        # Списки объектов
+        self.platforms: List[Platform] = []
+        self.collectibles: List[Collectible] = []
+        self.particles: List[Particle] = []
+        
+        # Состояние игры
+        self.game_state = GameState.MENU
+        self.running = True
+        
+        # Генерируем начальные платформы
+        self.generate_initial_platforms()
+    
+    def generate_initial_platforms(self):
+        """Генерирует начальные платформы"""
+        # Стартовая платформа
+        start_platform = Platform(SCREEN_WIDTH // 2 - 50, SCREEN_HEIGHT - 50, 100, PlatformType.NORMAL)
+        self.platforms.append(start_platform)
+        
+        # Генерируем платформы вверх
+        new_platforms = self.platform_generator.generate_platforms(-1000, self.platforms)
+        self.platforms.extend(new_platforms)
+        
+        # Генерируем предметы для платформ
+        for platform in new_platforms:
+            collectibles = self.collectible_generator.generate_for_platform(platform)
+            self.collectibles.extend(collectibles)
+    
+    def handle_events(self):
+        """Обрабатывает события"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            
+            elif event.type == pygame.KEYDOWN:
+                if self.game_state == GameState.MENU:
+                    if event.key == pygame.K_SPACE:
+                        self.start_game()
+                elif self.game_state == GameState.PLAYING:
+                    if event.key == pygame.K_SPACE:
+                        particles = self.player.jump()
+                        self.particles.extend(particles)
+                    elif event.key == pygame.K_p:
+                        self.game_state = GameState.PAUSED
+                    elif event.key == pygame.K_LEFT:
+                        self.player.move_horizontal(-1)
+                    elif event.key == pygame.K_RIGHT:
+                        self.player.move_horizontal(1)
+                elif self.game_state == GameState.PAUSED:
+                    if event.key == pygame.K_p:
+                        self.game_state = GameState.PLAYING
+                elif self.game_state == GameState.GAME_OVER:
+                    if event.key == pygame.K_SPACE:
+                        self.restart_game()
+            
+            # Обработка касаний (симуляция мышью)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if self.game_state == GameState.MENU:
+                    self.start_game()
+                elif self.game_state == GameState.PLAYING:
+                    self.controls.handle_touch_start(event.pos)
+                elif self.game_state == GameState.GAME_OVER:
+                    self.restart_game()
+            
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if self.game_state == GameState.PLAYING:
+                    particles = self.controls.handle_touch_end(event.pos, self.player)
+                    self.particles.extend(particles)
+    
+    def start_game(self):
+        """Начинает новую игру"""
+        self.game_state = GameState.PLAYING
+        self.player = Player(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 150)
+        self.camera = Camera()
+        self.ui = GameUI()
+        self.platforms.clear()
+        self.collectibles.clear()
+        self.particles.clear()
+        self.generate_initial_platforms()
+    
+    def restart_game(self):
+        """Перезапускает игру"""
+        self.ui.save_best_score()
+        self.start_game()
+    
+    def update(self):
+        """Обновляет игровую логику"""
+        if self.game_state != GameState.PLAYING:
             return
-
-
-
-
-    # Запускаем непрерывную отправку статуса "печатает"
-    stop_event = await start_typing_action(user_id)
-
-
-
-
-    # Обрабатываем изображение
-    image_data = await process_image(photo)
-
-
-
-
-    if not image_data:
-        # Останавливаем отправку статуса "печатает"
-        await stop_typing_action(user_id)
-
-        await message.answer(
-            "❌ Не удалось обработать изображение. Убедитесь, что оно в формате JPG, JPEG, PNG или WEBP "
-            "и его размер не превышает 10 МБ."
-        )
-        return
-
-
-
-
-    # Получаем ответ от AI (непрерывная отправка статуса "печатает" обрабатывается внутри функции)
-    ai_response = await get_ai_response(user_id, caption, image_data)
-
-
-
-
-    # Если временно переключили модель, возвращаемся к предыдущей
-    if not supports_vision and str(user_id) in user_settings and "previous_model" in user_settings[str(user_id)]:
-        previous_model = user_settings[str(user_id)]["previous_model"]
-        user_settings[str(user_id)]["model"] = previous_model
-        del user_settings[str(user_id)]["previous_model"]
-        save_user_settings()
-
-
-
-
-        # Отправляем ответ
-        await split_and_send_message(message, ai_response)
-
-
-
-
-        await message.answer(
-            f"🔄 Вернулся к предыдущей модели: **{format_model_name(previous_model)}**",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        # Отправляем ответ
-        await split_and_send_message(message, ai_response)
-
-
-
-
-@router.message()
-async def handle_message(message: Message, state: FSMContext):
-    """Обрабатывает все остальные текстовые сообщения."""
-    # Проверяем, не является ли сообщение простым приветствием
-    greeting_response = is_greeting(message.text)
-    if greeting_response:
-        await message.answer(greeting_response)
-        return
-
-
-
-
-    user_id = str(message.from_user.id)
-
-
-
-
-    # Проверяем и обновляем количество запросов
-    if message.from_user.username == "qqq5599":
-        pass  # Безлимит
-    else:
-        today = date.today().strftime("%Y-%m-%d")
-        if user_settings[user_id]["last_reset"] != today:
-            user_settings[user_id]["requests_left"] = 10
-            user_settings[user_id]["last_reset"] = today
-            save_user_settings()
-
-
-
-
-        if user_settings[user_id]["requests_left"] <= 0:
-            await message.answer("❌ Лимит запросов на сегодня исчерпан. Пожалуйста, попробуйте завтра.")
-            return
-
-
-
-
-        user_settings[user_id]["requests_left"] -= 1
-        save_user_settings()
-
-
-
-
-    # Запускаем непрерывную отправку статуса "печатает"
-    stop_event = await start_typing_action(int(user_id))
-
-
-
-
-    # Получаем ответ от AI
-    ai_response = await get_ai_response(int(user_id), message.text)
-
-
-
-
-    # Отправляем ответ с разбивкой на части при необходимости
-    await split_and_send_message(message, ai_response)
-
-
-
-
-# Функция инициализации и запуска бота
-async def main():
-    """Инициализация и запуск бота."""
-    # Загружаем настройки пользователей
-    load_user_settings()
-
-    # Загружаем историю диалогов
-    load_user_history()
-
-
-
-
-    # Очищаем веб-хуки и запускаем бота
-    await bot.delete_webhook(drop_pending_updates=True)
-
-
-
-
-    # Выводим информацию о запуске
-    logger.info(f"Бот запущен! Используется {len(ALL_MODELS)} моделей.")
-
-
-
-
-    # Запускаем бота
-    await dp.start_polling(bot)
-
-
-
+        
+        # Обновляем игрока
+        platform_particles = self.player.update(self.platforms)
+        self.particles.extend(platform_particles)
+        
+        # Обновляем камеру
+        self.camera.update(self.player)
+        
+        # Обновляем платформы
+        for platform in self.platforms:
+            platform.update()
+        
+        # Удаляем неактивные платформы
+        self.platforms = [p for p in self.platforms if p.active or p.y > self.camera.y - 100]
+        
+        # Генерируем новые платформы при необходимости
+        if self.player.y < self.camera.y - 500:
+            new_platforms = self.platform_generator.generate_platforms(self.player.y - 1000, self.platforms)
+            self.platforms.extend(new_platforms)
+            
+            # Генерируем предметы для новых платформ
+            for platform in new_platforms:
+                collectibles = self.collectible_generator.generate_for_platform(platform)
+                self.collectibles.extend(collectibles)
+        
+        # Обновляем собираемые предметы
+        for collectible in self.collectibles:
+            collectible.update()
+            
+            if collectible.check_collision(self.player):
+                if collectible.type == "crystal":
+                    self.ui.crystals_collected += 1
+                    self.ui.add_score(10)
+                elif collectible.type == "bonus":
+                    self.ui.activate_multiplier()
+                elif collectible.type == "shield":
+                    self.player.shield_active = True
+                    self.player.shield_time = 300  # 5 секунд
+                
+                # Создаем частицы при сборе
+                for _ in range(10):
+                    self.particles.append(Particle(
+                        collectible.x + random.randint(-10, 10),
+                        collectible.y + random.randint(-10, 10),
+                        random.uniform(-3, 3),
+                        random.uniform(-5, -2),
+                        YELLOW,
+                        random.randint(20, 40)
+                    ))
+        
+        # Удаляем собранные предметы
+        self.collectibles = [c for c in self.collectibles if c.active]
+        
+        # Обновляем частицы
+        for particle in self.particles:
+            particle.update()
+        
+        # Удаляем мертвые частицы
+        self.particles = [p for p in self.particles if p.life > 0]
+        
+        # Обновляем UI
+        self.ui.update(self.player.y)
+        
+        # Проверяем условие окончания игры
+        if self.player.y > self.camera.y + SCREEN_HEIGHT + 100:
+            if not self.player.shield_active:
+                self.game_state = GameState.GAME_OVER
+            else:
+                # Щит спасает от падения
+                self.player.y = self.camera.y + SCREEN_HEIGHT - 100
+                self.player.vel_y = JUMP_STRENGTH
+                self.player.shield_active = False
+    
+    def draw(self):
+        """Отрисовывает игру"""
+        # Очищаем экран
+        self.screen.fill(BLACK)
+        
+        if self.game_state == GameState.MENU:
+            self.draw_menu()
+        elif self.game_state == GameState.PLAYING:
+            self.draw_game()
+        elif self.game_state == GameState.PAUSED:
+            self.draw_game()
+            self.draw_pause_overlay()
+        elif self.game_state == GameState.GAME_OVER:
+            self.draw_game()
+            self.draw_game_over_overlay()
+        
+        pygame.display.flip()
+    
+    def draw_menu(self):
+        """Отрисовывает главное меню"""
+        # Фон
+        self.background.draw(self.screen, 0)
+        
+        # Заголовок
+        title_font = pygame.font.Font(None, 48)
+        title_text = title_font.render("Gravity Hopper", True, CYAN)
+        title_rect = title_text.get_rect(center=(SCREEN_WIDTH // 2, 150))
+        self.screen.blit(title_text, title_rect)
+        
+        # Подзаголовок
+        subtitle_font = pygame.font.Font(None, 24)
+        subtitle_text = subtitle_font.render("Антигравитационный робот", True, WHITE)
+        subtitle_rect = subtitle_text.get_rect(center=(SCREEN_WIDTH // 2, 190))
+        self.screen.blit(subtitle_text, subtitle_rect)
+        
+        # Инструкции
+        instructions = [
+            "Нажмите для прыжка",
+            "Удерживайте для высокого прыжка",
+            "Свайп влево/вправо для движения",
+            "",
+            f"Лучший результат: {self.ui.best_score}",
+            "",
+            "Нажмите любую клавишу для начала"
+        ]
+        
+        y_offset = 280
+        for instruction in instructions:
+            if instruction:
+                text = self.ui.font_small.render(instruction, True, WHITE)
+                text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, y_offset))
+                self.screen.blit(text, text_rect)
+            y_offset += 25
+        
+        # Анимированный робот-демонстрация
+        demo_y = 450 + math.sin(pygame.time.get_ticks() * 0.003) * 20
+        pygame.draw.circle(self.screen, CYAN, (SCREEN_WIDTH // 2, int(demo_y)), 15)
+        pygame.draw.circle(self.screen, WHITE, (SCREEN_WIDTH // 2, int(demo_y)), 15, 2)
+    
+    def draw_game(self):
+        """Отрисовывает игровой процесс"""
+        # Фон
+        self.background.draw(self.screen, self.camera.y)
+        
+        # Платформы
+        for platform in self.platforms:
+            platform.draw(self.screen, self.camera.y)
+        
+        # Собираемые предметы
+        for collectible in self.collectibles:
+            collectible.draw(self.screen, self.camera.y)
+        
+        # Частицы
+        for particle in self.particles:
+            particle.draw(self.screen, self.camera.y)
+        
+        # Игрок
+        self.player.draw(self.screen, self.camera.y)
+        
+        # Индикатор зарядки прыжка
+        charge = self.controls.get_jump_charge_visual()
+        if charge > 0:
+            bar_width = int(100 * charge)
+            bar_rect = pygame.Rect(SCREEN_WIDTH // 2 - 50, SCREEN_HEIGHT - 30, bar_width, 10)
+            pygame.draw.rect(self.screen, YELLOW, bar_rect)
+            pygame.draw.rect(self.screen, WHITE, pygame.Rect(SCREEN_WIDTH // 2 - 50, SCREEN_HEIGHT - 30, 100, 10), 2)
+        
+        # UI
+        self.ui.draw(self.screen)
+    
+    def draw_pause_overlay(self):
+        """Отрисовывает оверлей паузы"""
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        overlay.set_alpha(128)
+        overlay.fill(BLACK)
+        self.screen.blit(overlay, (0, 0))
+        
+        pause_text = self.ui.font_large.render("ПАУЗА", True, WHITE)
+        pause_rect = pause_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
+        self.screen.blit(pause_text, pause_rect)
+        
+        continue_text = self.ui.font_small.render("Нажмите P для продолжения", True, WHITE)
+        continue_rect = continue_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40))
+        self.screen.blit(continue_text, continue_rect)
+    
+    def draw_game_over_overlay(self):
+        """Отрисовывает оверлей окончания игры"""
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        overlay.set_alpha(180)
+        overlay.fill(BLACK)
+        self.screen.blit(overlay, (0, 0))
+        
+        game_over_text = self.ui.font_large.render("ИГРА ОКОНЧЕНА", True, RED)
+        game_over_rect = game_over_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 60))
+        self.screen.blit(game_over_text, game_over_rect)
+        
+        score_text = self.ui.font_medium.render(f"Очки: {self.ui.score}", True, WHITE)
+        score_rect = score_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20))
+        self.screen.blit(score_text, score_rect)
+        
+        height_text = self.ui.font_medium.render(f"Высота: {self.ui.height_meters}м", True, WHITE)
+        height_rect = height_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 10))
+        self.screen.blit(height_text, height_rect)
+        
+        crystals_text = self.ui.font_medium.render(f"Кристаллы: {self.ui.crystals_collected}", True, PURPLE)
+        crystals_rect = crystals_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40))
+        self.screen.blit(crystals_text, crystals_rect)
+        
+        if self.ui.score == self.ui.best_score and self.ui.score > 0:
+            new_record_text = self.ui.font_medium.render("НОВЫЙ РЕКОРД!", True, YELLOW)
+            new_record_rect = new_record_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 70))
+            self.screen.blit(new_record_text, new_record_rect)
+        
+        restart_text = self.ui.font_small.render("Нажмите любую клавишу для перезапуска", True, WHITE)
+        restart_rect = restart_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 120))
+        self.screen.blit(restart_text, restart_rect)
+    
+    def run(self):
+        """Основной игровой цикл"""
+        while self.running:
+            self.handle_events()
+            self.update()
+            self.draw()
+            self.clock.tick(FPS)
+        
+        # Сохраняем лучший результат при выходе
+        self.ui.save_best_score()
+        pygame.quit()
+
+def main():
+    """Точка входа в программу"""
+    game = GravityHopper()
+    game.run()
 
 if __name__ == "__main__":
-    # Запускаем бота в асинхронном режиме
-    asyncio.run(main())
+    main()
